@@ -11,6 +11,7 @@ import tensorstore as ts
 from glob import glob
 from tqdm import tqdm
 from emprocess.utils.io import get_dataset_attributes, set_dataset_attributes
+from emprocess.utils.mask import compute_greyscale_mask
 
 from emalign.align_xy.prep import create_configs_fused_stacks, find_overlapping_stacks
 from emalign.arrays.utils import _compute_laplacian_var, _compute_sobel_mean, _compute_grad_mag
@@ -100,6 +101,7 @@ def fuse_stacks_group(config,
     # Open datasets
     datasets = {}
     dataset_masks = {}
+    destination_name = [list(config.keys())[0].split('_')[0]]
     for stack, attrs in config.items():
         datasets[stack] = ts.open({'driver': 'zarr',
                         'kvstore': {
@@ -107,12 +109,15 @@ def fuse_stacks_group(config,
                                 'path': attrs['path'],
                                     }},
                             read=True).result()
-        dataset_masks[stack] = ts.open({'driver': 'zarr',
-                                'kvstore': {
-                                    'driver': 'file',
-                                    'path': attrs['path'] + '_mask',
-                                            }},
-                                read=True).result()
+        if os.path.exists(attrs['path'] + '_mask'):
+            dataset_masks[stack] = ts.open({'driver': 'zarr',
+                                    'kvstore': {
+                                        'driver': 'file',
+                                        'path': attrs['path'] + '_mask',
+                                                }},
+                                    read=True).result()
+        else:
+            dataset_masks[stack] = None
         destination_name.append(stack.split('_', maxsplit=1)[-1])
     z_max = list(datasets.values())[0].domain[0].exclusive_max
     destination_name = '_'.join(destination_name)
@@ -122,8 +127,7 @@ def fuse_stacks_group(config,
         logging.warning('Existing dataset will be deleted and aligned from scratch.')
 
     # Prepare destination
-    destination_name = [list(config.values())[0].split('_')[0]]
-    destination_basepath = os.path.dirname(list(config.values())[0])
+    destination_basepath = os.path.dirname(list(config.values())[0]['path'])
     destination_path = os.path.join(destination_basepath, destination_name)
     destination_mask_path = os.path.join(destination_basepath, destination_name + '_mask')
     if overwrite or not os.path.exists(destination_path):
@@ -184,19 +188,33 @@ def fuse_stacks_group(config,
     k = 0.1
     gamma = 0.5 
     
-    pbarz = tqdm(range(z_max), desc='Fusing stacks...', position=0)
+    pbarz = tqdm(range(z_max), position=1)
     for z in pbarz:
         if check_progress({'stack_name': stack_name, 'z': z}, db_host, db_name, collection_name) and not overwrite:
             pbarz.set_description(f'Skipping...')
             continue
+        pbarz.set_description(f'Fusing stacks...')
         canvas = None
         canvas_mask = None
-        pbar_slice = tqdm(config.keys(), position=1, leave=False)
+        pbar_slice = tqdm(config.keys(), position=2, leave=False)
         for stack in pbar_slice:
             pbar_slice.set_description('Slice in progress...')
             img = datasets[stack][z].read().result()
-            mask = dataset_masks[stack][z].read().result()
 
+            if not img.any():
+                continue
+
+            if dataset_masks[stack] is None:
+                mask = compute_greyscale_mask(img)
+            else:
+                mask = dataset_masks[stack][z].read().result()
+
+            if canvas is None:
+                # First image
+                canvas = img.copy()
+                canvas_mask = mask.copy()
+                continue
+            
             try:
                 canvas, canvas_mask = stitch_images(canvas, 
                                                     img,
@@ -212,12 +230,17 @@ def fuse_stacks_group(config,
                                                     k=k,
                                                     gamma=gamma)
             except Exception as e:
+                # TODO: fix this. Error gets messy because of tqdm bars
+                print()
+                print()
+                print()
+                print(f'Error in stack (z = {z}): {stack}')
                 raise(e)
             
             if pbar_slice.n == pbar_slice.total-1:
                 pbar_slice.set_description('Writing slice...')
-                write_slice(destination, canvas, z)
-                write_slice(destination_mask, canvas_mask, z)
+                destination, _ = write_slice(destination, canvas, z)
+                destination_mask, _ = write_slice(destination_mask, canvas_mask, z)
 
         # Log progress
         doc = {
@@ -230,6 +253,7 @@ def fuse_stacks_group(config,
                             'k':k,
                             'gamma':gamma
                             },
+            'empty_slice': canvas is None,
             'scale': scale,
             'img_on_top': img_on_top
                 }
@@ -268,27 +292,28 @@ def align_fused_stacks_xy(config_path,
     db_name=f'alignment_progress_{project}'
 
     fused_configs = get_fused_configs(config_path,
-                                      scale)
+                                      0.1)
     
-    # Function to determine image quality (to choose which one is on top)
+    # Function to determine image quality to choose which one is on top
+    # Highest value == on top
     # laplacian variance is sensitive to contrast and is thus weighted lower
     img_q_fun = lambda img, m: _compute_laplacian_var(img, m)*0.5 + _compute_sobel_mean(img, m) + _compute_grad_mag(img, m)*100
     
-    pbar = tqdm(total=sum([len(c.values()) for cfg in fused_configs.values() for c in cfg]))
-    for segment, configs in fused_configs.items():
+    pbar = tqdm(fused_configs.items(), position=0, leave=True)
+    for segment, configs in pbar:
         pbar.set_description(f'{segment}: Processing groups of stacks...')
 
         for config in configs:
             fuse_stacks_group(config, 
-                            db_name=db_name,
-                            scale=scale,
-                            patch_size=patch_size, 
-                            stride=stride, 
-                            img_on_top=img_on_top, 
-                            img_q_fun=img_q_fun, 
-                            overwrite=overwrite,
-                            num_workers=num_workers)
-            pbar.update()
+                              db_name=db_name,
+                              scale=scale,
+                              patch_size=patch_size, 
+                              stride=stride, 
+                              img_on_top=img_on_top, 
+                              img_q_fun=img_q_fun, 
+                              overwrite=overwrite,
+                              num_workers=num_workers)
+
 
 if __name__ == '__main__':
 
@@ -305,7 +330,7 @@ if __name__ == '__main__':
                         metavar='CORES',
                         dest='num_workers',
                         required=True,
-                        type=str,
+                        type=int,
                         help='Number of threads to use for rendering. Default: 1')
     args=parser.parse_args()
 
