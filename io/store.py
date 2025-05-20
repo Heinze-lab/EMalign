@@ -8,13 +8,14 @@ from emprocess.utils.io import get_dataset_attributes
 def write_slice(dataset, arr, z, x_offset=0, y_offset=0):
 
     y,x = arr.shape
-
-    if np.any(dataset.domain.exclusive_max < np.array([z+1, y, x])):
-        new_max = [z+1, y+y_offset, x+x_offset]
+    new_max = np.array([z+1, y+y_offset, x+x_offset])
+    if np.any(np.array(dataset.domain.exclusive_max) < new_max):
         new_max = np.max([dataset.domain.exclusive_max, new_max], axis=0)
         dataset = dataset.resize(exclusive_max=new_max, expand_only=True).result()
-
-    return dataset[z:z+1, y_offset:y, x_offset:x].write(arr).result()
+    try:
+        return dataset, dataset[z:z+1, y_offset:y+y_offset, x_offset:x+x_offset].write(arr).result()
+    except Exception as e:
+        raise e
 
 
 # READ
