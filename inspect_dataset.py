@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import sys
 import tensorstore as ts
 
 from glob import glob
@@ -48,7 +49,8 @@ def inspect_dataset(
             keep_missing=False,
             project_configs=[],
             mode=None,
-            bind_port=55555):
+            bind_port=55555,
+            print_shape=False):
     '''Display images from a zarr store.
 
     Loads images from a zarr store as defined by the data range, and display it in a neuroglancer viewer.
@@ -70,6 +72,20 @@ def inspect_dataset(
     modes = ['z_transitions', 'all_ds']
     if mode is not None and mode not in modes:
         raise ValueError(f'Invalid mode. Must be one of: {modes}')
+
+    if print_shape:
+        spec = {'driver': 'zarr',
+                'kvstore': {
+                         'driver': 'file',
+                         'path': dataset_path,
+                            }}
+        dataset = ts.open(spec,
+                          read=True,
+                          dtype=ts.uint8
+                          ).result()
+        print(f'Dataset shape (ZYX):\n    {dataset.shape}')
+        sys.exit()
+
     
     # Start viewer
     viewer = start_nglancer_viewer(bind_address='localhost',
@@ -83,6 +99,7 @@ def inspect_dataset(
         d = read_data(dataset_path, data_range=tuple(data_range), keep_missing=keep_missing)
         add_layers([d], 
                    viewer, 
+                   voxel_offsets=[[0,0,data_range[0]]],
                    names=[dataset_name])
     elif mode == 'z_transitions':
         dataset_paths = []
@@ -107,6 +124,7 @@ def inspect_dataset(
             add_layers([d], 
                        viewer, 
                        names=[f'{dataset_name}_{z}'], 
+                       voxel_offsets=[[0,0,data_range[0]]],
                        visible=visible,
                        clear_viewer=False)
     elif mode == 'all_ds':
@@ -119,6 +137,7 @@ def inspect_dataset(
             add_layers([d], 
                        viewer, 
                        names=[dataset_name], 
+                       voxel_offsets=[[0,0,data_range[0]]],
                        visible=visible,
                        clear_viewer=False)
     input('All data loaded. Press ENTER or ESCAPE to exit.')
@@ -167,7 +186,12 @@ if __name__ == '__main__':
                         type=int,
                         default=55555,
                         help='Port to use for neuroglancer.')
-    
+    parser.add_argument('--print-shape',
+                        dest='print_shape',
+                        required=False,
+                        action='store_true',
+                        default=False,
+                        help='Print the dataset\'s shape in pixels without displaying it')
     
     args=parser.parse_args()
 
