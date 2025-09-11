@@ -13,8 +13,11 @@ from tqdm import tqdm
 from emprocess.utils.io import get_dataset_attributes, set_dataset_attributes
 from emprocess.utils.mask import compute_greyscale_mask
 
-from emalign.align_xy.prep import create_configs_fused_stacks, find_overlapping_stacks
-from emalign.arrays.utils import _compute_laplacian_var, _compute_sobel_mean, _compute_grad_mag
+from emalign.align_xy.prep import create_configs_fused_stacks
+from emalign.arrays.utils import _compute_laplacian_var, _compute_sobel_mean, _compute_grad_mag, downsample
+
+
+# TODO: add a first slice test to make sure it is not missing images
 
 
 def get_fused_configs(
