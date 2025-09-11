@@ -17,23 +17,68 @@ from emprocess.utils.io import get_dataset_attributes
 from ..arrays.sift import estimate_transform_sift
 
 
-def get_ordered_datasets(dataset_paths):
+def get_ordered_datasets(config_paths, exclude=[]):
+    '''Open and order datastacks based on Z offset.
 
+    Args:
+        dataset_paths (list): List of paths to the datasets to open and order.
+        fused_config_dirs (list, optional): List of paths to the configuration directories containaining the fused stacks configs
+            Paths to these stacks will be ignored. Defaults to [].
+        exclude (list, optional): List of strings to find in paths. If the string is found, the path will be ignored. 
+
+    Returns:
+        tuple: tuple of:
+            List of tensorstore.TensorStore
+            List of corresponding voxel offsets.
+    '''
+
+    config_groups = []
+    for config in config_paths:
+        if isinstance(config, list):
+            config_groups.append(config)
+        else:
+            config_groups.append([config])
+
+    # Check config one by one
+    dataset_paths = []
     dataset_stores = []
     offsets = []
-    for ds in dataset_paths:
-        spec = {
-                'driver': 'zarr',
-                'kvstore': {
-                    'driver': 'file',
-                    'path': ds,
-                }
-               }
-        dataset = ts.open(spec).result()
-        dataset_stores.append(dataset)
+    previous_offset = 0
+    for config_group in config_groups:
+        group_offsets = []
+        z_shapes = []
+        for config_path in config_group:
+            with open(config_path, 'r') as f:
+                main_config = json.load(f)
+            
+            # Get info from config
+            project_name    = main_config['project_name']
+            output_path     = main_config['output_path']
+            dataset_paths = [d for d in glob(os.path.join(output_path, '*/')) 
+                             if (os.path.basename(d[:-1]) != project_name) & (os.path.basename(d[:-1]) != '10x_' + project_name)]
 
-        attrs = get_dataset_attributes(dataset)
-        offsets.append(attrs['voxel_offset'])
+            for ds in dataset_paths:
+                check = [pattern in ds for pattern in exclude]
+                if np.any(check):
+                    continue
+                spec = {
+                        'driver': 'zarr',
+                        'kvstore': {
+                            'driver': 'file',
+                            'path': ds,
+                        }
+                    }
+                dataset = ts.open(spec).result()
+                z_shapes.append(dataset.shape[0])
+
+                offset = get_dataset_attributes(dataset)['voxel_offset']
+                offset[0] += previous_offset
+                group_offsets.append(offset)
+                offsets.append(offset)
+                dataset_stores.append(dataset)
+
+        # If configs are supposed to be consecutive stacks, the offsets should match that
+        previous_offset = np.array(group_offsets)[:,0].max() + z_shapes[np.array(group_offsets)[:,0].argmax()]
 
     offsets = np.array(offsets)
 
@@ -43,46 +88,154 @@ def get_ordered_datasets(dataset_paths):
     return dataset_stores, offsets
 
 
-def compute_datasets_offsets(datasets, 
-                             offsets,
-                             scale, 
-                             step_slices,
-                             yx_target_resolution,
-                             pad_offset=(0,0),
-                             num_workers=0):
+def extract_paths_from_root(G, root_node):
+    # Special nodes: degree != 2 (root, leaves, and branch points)
+    special = [root_node] + list({n for n, d in G.degree() if d != 2 and n != root_node})
+    paths = []
+
+    for node in special:
+        for neigh in G.neighbors(node):
+            if node < neigh:  # prevent duplicating opposite directions
+                path = [node, neigh]
+                prev, current = node, neigh
+                while current not in special or current == node:
+                    next_nodes = [n for n in G.neighbors(current) if n != prev]
+                    if not next_nodes:
+                        break
+                    prev, current = current, next_nodes[0]
+                    path.append(current)
+                paths.append(path)
+
+    # Order paths so they are traversed properly
+    ordered_paths = []
+    remove = []
+    for p in paths:
+        if root_node == p[0]:
+            ordered_paths.append(p)
+            remove.append(p)
+        elif root_node == p[-1]:
+            ordered_paths.append(p[::-1])
+            remove.append(p)
+    [paths.remove(p) for p in remove]
+
+    try_reverse = False # Prioritize forward pass
+    while paths:
+        remove = []
+        for path in paths:
+            if any([path[0] in p for p in ordered_paths]):
+                ordered_paths.append(path)
+                remove.append(path)
+            elif any([path[-1] in p for p in ordered_paths]) and try_reverse:
+                ordered_paths.append(path[::-1])
+                remove.append(path)
+        try_reverse = not bool(remove)
+        [paths.remove(r) for r in remove]
+    return ordered_paths
+
+
+def compute_alignment_path(datasets, 
+                           z_offsets,
+                           target_resolution,
+                           scale=0.2):
     
-    offsets_yx = [[0,0]]
-    fs = []
-    with futures.ThreadPoolExecutor(num_workers) as tpe:
-        for dataset in datasets:
-            fs.append(tpe.submit(get_data_samples, dataset, step_slices, yx_target_resolution))
+    if isinstance(target_resolution, int):
+        target_resolution = [target_resolution, target_resolution]
+    
+    def _get_slice(store, z, reverse, target_resolution=target_resolution):
+        resolution = get_dataset_attributes(store)['resolution']
+        assert resolution[-2] == resolution[-1], 'Resolution must be the same in X and Y'
+        assert target_resolution[-2] == target_resolution[-1], 'Target resolution must be the same in X and Y'
+        target_scale = resolution[-1]/target_resolution[-1]
 
-        fs = fs[::-1]
+        img = find_ref_slice(store, z, reverse=reverse)[0]
+        return downsample(img, target_scale)
+    
+    # Find all ranges over which there is overlap
+    z_ranges = [np.arange(z[0], z[0] + ds.shape[0]) for z, ds in zip(z_offsets, datasets)]
+    unique_slices = sorted(np.unique(np.concatenate(z_ranges)).tolist())
+    df = pd.DataFrame({'z': unique_slices, 
+                    'ds_indices': [[] for _ in range(len(unique_slices))]
+                        })
+    extend_list = lambda lst: lst + [datasets.index(ds)]
+    for ds, z_range in zip(datasets, z_ranges):
+        df.loc[df.z.isin(z_range), 'ds_indices'] = df.loc[df.z.isin(z_range), 'ds_indices'].apply(extend_list)
+    df['group'] = df['ds_indices'].ne(df['ds_indices'].shift()).cumsum()
 
-        # Do very first dataset
-        data = fs.pop().result()
-        inner_offsets = [estimate_transform_sift(data[i-1], data[i], scale=scale, refine_estimate=True)[0] 
-                        for i in range(1, len(data))]
-        # Offset between first and last image of the first dataset
-        last_inner_offset = np.sum(inner_offsets, axis=0)
-        rotation_angle = 0
-        for _ in tqdm(range(len(fs)),
-                      desc=f'Calculating offset between {len(datasets)} datasets.'):
-            # Reference is the latest image before the current dataset
-            prev = rotate_image(data[-1], rotation_angle)
-            data = fs.pop().result()
+    # Remove datasets that we fused only at the relevant Z indices
+    z_levels = {}
+    for g, group in df.groupby('group'):
+        # Find datasets to remove from that slice
+        indices = np.unique(group.ds_indices.to_numpy())[0]
+        names = [datasets[i].kvstore.path.split('/')[-2] for i in indices]
+        
+        ignore_indices = []
+        for name in names:
+            if 'fused' in name:
+                ignore_indices += [indices[i] for i,n in enumerate(names) if n in name and n != name]
+        df.loc[df.group == g, 'ds_indices'] = df.loc[df.group == g, 'ds_indices'].apply(lambda l: list(set(l).difference(ignore_indices)))
 
-            offset_to_last, rotation_angle, _ = estimate_transform_sift(prev, data[0], scale=scale, refine_estimate=True)
-            # Calculate offset to the last stack 
-            offsets_yx.append(offset_to_last + last_inner_offset)
+        # Keep track of where there are changes of datasets
+        z_levels[g] = (group.z.min(), group.z.max())
 
-            # Offset between first and last image (to account for differences between first images of different stacks and drift)
-            last_inner_offset = np.sum([estimate_transform_sift(data[i-1], data[i], scale=scale)[0] 
-                                    for i in range(1, len(data))], axis=0)
+    # Find first dataset alone at its own z level
+    root_node_idx = df.ds_indices[df.ds_indices.apply(len) == 1][0][0]
+    root_node = os.path.basename(os.path.abspath(datasets[root_node_idx].kvstore.path))
 
-    offsets_yx = np.array(offsets_yx)
+    # Compute valid alignment paths
+    G = nx.Graph()
+    G.add_nodes_from(np.unique(np.concatenate(df.ds_indices)).tolist())
+    grouped = df.groupby('group')
+    for g, curr_group in grouped:
+        if g == df.group.max():
+            break
+        next_group = grouped.get_group(g+1)
+        for u in curr_group.ds_indices.iloc[0]:
+            for v in next_group.ds_indices.iloc[0]:
+                # Check for match at the boundary of the relevant range
+                ref = _get_slice(datasets[u], curr_group.z.max() - z_offsets[u, 0], reverse=True)
+                mov = _get_slice(datasets[v], next_group.z.min() - z_offsets[v, 0], reverse=False)
+                M, out_shape, ref_offset, valid_estimate, _ = estimate_transform_sift(ref.copy(), mov.copy(), scale=scale, refine_estimate=True)
 
-    yx_cumsum = np.cumsum(offsets_yx, axis=0)
-    offsets[:, 1:] += (yx_cumsum - np.min(yx_cumsum, axis=0)).astype(int)
-    offsets[:, 1:] += np.array(pad_offset)
-    return offsets
+                if valid_estimate:
+                    # Keep track of everything, mostly for debugging
+                    G.add_edge(u,v, M=M, out_shape=out_shape, ref_offset=ref_offset, valid_estimate=valid_estimate)
+
+    if not nx.is_connected(G):
+        x = [[os.path.basename(os.path.abspath(datasets[i].kvstore.path)) for i in cc] for cc in nx.connected_components(G)]
+        raise RuntimeError(f'Some datasets are isolated: \n{x}')
+
+    paths = extract_paths_from_root(G, root_node_idx)
+    reverse_z = [bool(z_offsets[p[0], 0] > z_offsets[p[0], 0]) for p in paths]
+    paths = [[os.path.basename(os.path.abspath(datasets[i].kvstore.path)) for i in p] for p in paths]
+
+    # Datasets will need to be bounded to not re-use fused images
+    ds_bounds = {}
+    for i in np.unique(np.concatenate(df.ds_indices.to_numpy())):
+        zmin = df.loc[df.ds_indices.apply(lambda l: i in l), 'z'].min() - z_offsets[i, 0]
+        zmax = df.loc[df.ds_indices.apply(lambda l: i in l), 'z'].max() - z_offsets[i, 0] + 1  # Exclusive max
+        ds_bounds[os.path.basename(os.path.abspath(datasets[i].kvstore.path))] = (int(zmin), int(zmax))
+    return root_node, paths, reverse_z, ds_bounds
+
+
+def determine_initial_offset(datasets, paths):
+
+    if not isinstance(datasets, dict):
+        datasets = {os.path.basename(os.path.abspath(d.kvstore.path)): d for d in datasets}
+    
+    global_offset = np.array([0,0])
+    for path in paths:
+        path_offset = np.array([0,0])
+
+        prev = find_ref_slice(datasets[path[0]], reverse=True)[0]
+        for stack_name in path[1:]:
+            ds_curr = datasets[stack_name]
+            curr = find_ref_slice(ds_curr, reverse=False)[0]
+
+            M, output_shape, prev_offset, _, _ = estimate_transform_sift(prev, curr, scale=0.1, refine_estimate=True)
+
+            prev = warpAffine(find_ref_slice(ds_curr, reverse=True)[0], M, output_shape[::-1])
+            path_offset += prev_offset
+        
+        global_offset = np.min([global_offset, path_offset], axis=0)
+    
+    return np.abs(global_offset)
