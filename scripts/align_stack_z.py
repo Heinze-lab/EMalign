@@ -1,7 +1,5 @@
 import inspect
 import os
-
-from emalign.arrays.utils import downsample
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 # os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'cuda_async'
 os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
@@ -22,10 +20,11 @@ from tqdm import tqdm
 from sofima import mesh
 from sofima.warp import ndimage_warp
 from emprocess.utils.io import get_dataset_attributes, set_dataset_attributes
-from emprocess.utils.mask import compute_greyscale_mask
+from emprocess.utils.mask import compute_greyscale_mask, mask_to_bbox
 
 from emalign.align_z.align_z import compute_flow_dataset, get_inv_map_mod
 from emalign.io.store import find_ref_slice
+from emalign.arrays.utils import downsample
 
 
 logging.basicConfig(level=logging.INFO)
@@ -305,13 +304,22 @@ def align_stack_z(destination_path,
         # Mask gets full of holes because of warping
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT,(3,3))
         aligned_mask = cv2.morphologyEx(aligned_mask.astype(np.uint8),cv2.MORPH_CLOSE,kernel).astype(bool)
+
+        # Writing bounding box
+        y1, y2, x1, x2 = mask_to_bbox(aligned_mask)
         
-        write_data(destination, aligned, 
+        write_data(destination, 
+                   aligned[y1:y2, x1:x2], # Only write in the bounding box where the data is
                    z + z_offset - dataset.domain.inclusive_min[0], # z_offset relates to original minimum
-                   np.abs(xy_offset), save_downsampled, ds_destination)
-        write_data(destination_mask, aligned_mask, 
+                   aligned_mask[y1:y2, x1:x2], # Mask where to write the data
+                   np.abs(xy_offset) + np.array([x1, y1]), # Only write in the bounding box where the data is
+                   save_downsampled, ds_destination)
+        write_data(destination_mask, 
+                   aligned_mask[y1:y2, x1:x2], 
                    z + z_offset - dataset.domain.inclusive_min[0], 
-                   np.abs(xy_offset), 1, None)
+                   aligned_mask[y1:y2, x1:x2],
+                   np.abs(xy_offset) + np.array([x1, y1]), 
+                   1, None)
     logging.info(f'{dataset_name}: Done. ({skipped} empty slices)')
 
     # Add an attribute to keep track of what datasets have been aligned already
@@ -321,7 +329,7 @@ def align_stack_z(destination_path,
     return True
 
 
-def write_data(destination, data, z, xy_offset=[0,0], save_downsampled=1, ds_destination=None):
+def write_data(destination, data, z, mask=None, xy_offset=[0,0], save_downsampled=1, ds_destination=None):
     tasks = []
     x_off, y_off = xy_offset
 
@@ -330,6 +338,13 @@ def write_data(destination, data, z, xy_offset=[0,0], save_downsampled=1, ds_des
     if np.any(destination.domain.exclusive_max < np.array([z+1, y+y_off, x+x_off])):
         new_max = np.max([destination.domain.exclusive_max, [z+1, y+y_off, x+x_off]], axis=0)
         destination = destination.resize(exclusive_max=new_max, expand_only=True).result()
+
+    if mask is not None:
+        # We assume that data already exists and we need to preserve it
+        og_data = destination[z, y_off:y+y_off, x_off:x+x_off].read().result()
+        og_data[mask] = data[mask]
+        data = og_data
+    
     tasks.append(destination[z, y_off:y+y_off, x_off:x+x_off].write(data).result())
 
     # Write downsampled data for inspection
