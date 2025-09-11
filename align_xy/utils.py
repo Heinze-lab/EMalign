@@ -8,10 +8,16 @@ from ..arrays.utils import compute_laplacian_var_diff
 from ..arrays.overlap import get_overlap
 
 
-def mask_to_mesh(mask, stride):
-    y, x = np.max([np.array(mask.shape) % stride, np.ones(mask.ndim)], axis=0).astype(int)
-    x_target = np.repeat(mask[None, None, :-y:stride, :-x:stride], 2, axis=0).astype(np.float32) - 1
-    x_target[x_target<0] = np.nan
+def mask_to_mesh(mask, yx_shape):
+        
+    # Create coordinate arrays for sampling
+    y_coords = np.linspace(0, mask.shape[0] - 1, yx_shape[0]).astype(int)
+    x_coords = np.linspace(0, mask.shape[1] - 1, yx_shape[1]).astype(int)
+    
+    # Sample the mask at these coordinates
+    x = mask[np.ix_(y_coords, x_coords)]
+    x = np.repeat(x[None, None, ...], 2, axis=0).astype(np.float32) - 1 
+    x[x<0] = np.nan
     return x_target
 
 
