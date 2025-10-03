@@ -209,9 +209,14 @@ def align_stack_z(destination_path,
     os.makedirs(out_path_meshes, exist_ok=True)
     inv_map_path = os.path.join(out_path_meshes, dataset_name + '.npy')
     vmax_path = os.path.join(out_path_meshes, dataset_name + '_vmax.npy')
-    mesh_config = mesh.IntegrationConfig(dt=0.001, gamma=gamma, k0=k0, k=k, stride=(stride, stride), num_iters=1000,
-                                         max_iters=100000, stop_v_max=0.005, dt_max=10, start_cap=0.01,
-                                         final_cap=1, prefer_orig_order=True, remove_drift=True)
+    
+    mesh_config = mesh.IntegrationConfig(dt=0.001, gamma=0.5, k0=0.1, k=0.4,
+                                         stride=(stride, stride),
+                                         num_iters=1000,max_iters=100000,
+                                         stop_v_max=0.002, dt_max=2, 
+                                         start_cap=0.1, final_cap=1.0,
+                                         prefer_orig_order=True, remove_drift=True)
+    
     if not os.path.exists(inv_map_path):
         inv_map, _, v_max = get_inv_map_mod(flow, stride, dataset_name, mesh_config)
         np.save(inv_map_path, inv_map)
