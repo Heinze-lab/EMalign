@@ -354,14 +354,15 @@ def align_stack_z(destination_path,
                    np.abs(xy_offset) + np.array([x1, y1]), 
                    1, None)
 
+        # Log progress
         metadata = {
             'empty_slice': False,
             'warp_config': warp_config,
-            'mesh_config': mesh_config,
+            'mesh_config': mesh_config_args,
+            'overwrite': overwrite,
             'bbox': [int(y1), int(y2), int(x1), int(x2)]
         }
-        local_slice_index = z - dataset.domain.inclusive_min[0]
-        log_progress(db, dataset_name, step_name, z, local_slice_index, metadata)
+        log_progress(db, dataset_name, step_name, global_z, z, metadata)
     logging.info(f'{dataset_name}: Done.')
     logging.info(f'Empty slices: {empty}')
     logging.info(f'Skipped already processed slices: {skipped}')
