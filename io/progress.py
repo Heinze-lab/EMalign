@@ -22,11 +22,11 @@ def get_mongo_db(client, project_name):
     db_name = f'alignment_{project_name}'
     return client[db_name]
 
-def log_progress(db, stack_name, step_name, global_slice_index, local_slice_index, metadata):
+def log_progress(db, collection_name, step_name, global_slice_index, local_slice_index, metadata):
     '''
     Logs progress to the database.
     '''
-    collection = db[stack_name]
+    collection = db[collection_name]
     doc = {
         'step_name': step_name,
         'global_slice': global_slice_index,
@@ -36,18 +36,18 @@ def log_progress(db, stack_name, step_name, global_slice_index, local_slice_inde
     }
     collection.insert_one(doc)
 
-def check_progress(db, stack_name, step_name, global_slice_index):
+def check_progress(db, collection_name, step_name, local_slice_index):
     '''
     Checks if a slice has already been processed.
     '''
-    collection = db[stack_name]
-    return collection.count_documents({'step_name': step_name, 'global_slice': global_slice_index}) > 0
+    collection = db[collection_name]
+    return collection.count_documents({'step_name': step_name, 'local_slice': local_slice_index}) > 0
 
-def wipe_progress(db, stack_name, step_name=None):
+def wipe_progress(db, collection_name, step_name=None):
     '''
     Wipes the progress for a given stack.
     '''
     if step_name is None:
-        db.drop_collection(stack_name)
+        db.drop_collection(collection_name)
     else:
-        db[stack_name].delete_many({'step_name': step_name})
+        db[collection_name].delete_many({'step_name': step_name})
