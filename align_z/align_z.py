@@ -16,7 +16,7 @@ from tqdm import tqdm
 from emprocess.utils.mask import compute_greyscale_mask
 from emprocess.utils.io import get_dataset_attributes, set_dataset_attributes
 from ..io.store import find_ref_slice, open_store
-from ..arrays.utils import downsample, homogenize_arrays_shape, pad_to_shape
+from ..arrays.utils import resample, homogenize_arrays_shape, pad_to_shape
 from ..arrays.sift import estimate_transform_sift
 
 
