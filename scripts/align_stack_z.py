@@ -50,7 +50,11 @@ def align_stack_z(destination_path,
                   save_downsampled=1,
                   overwrite=False,
                   wipe_progress_flag=False,
+                  reverse_order=False,
                   num_workers=10):
+    
+    if reverse_order:
+        raise NotImplementedError('Processing a stack in reverse is not implemented yet.')
     
     if isinstance(yx_target_resolution, list):
         assert yx_target_resolution[0] == yx_target_resolution[1], 'Only supports equal resolution in X and Y'
