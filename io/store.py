@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import tensorstore as ts
 from typing import List, Optional, Union
+import json
 
 from emprocess.utils.transform import rotate_image
 from emprocess.utils.io import get_dataset_attributes
@@ -154,6 +155,18 @@ def open_store(
             kwargs['fill_value'] = fill_value
 
         return ts.open(spec, **kwargs).result()
+    
+
+def set_store_attributes(store, attrs):
+    with open(os.path.join(store.kvstore.path, '.zattrs'), 'w') as f:
+        json.dump(attrs, f, indent=2)
+    return True 
+
+
+def get_store_attributes(store):
+    with open(os.path.join(store.kvstore.path, '.zattrs'), 'r') as f:
+        attrs = json.load(f)
+    return attrs
 
 
 # WRITE
