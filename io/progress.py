@@ -36,12 +36,13 @@ def log_progress(db, collection_name, step_name, global_slice_index, local_slice
     }
     collection.insert_one(doc)
 
-def check_progress(db, collection_name, step_name, local_slice_index):
+def check_progress(db, collection_name, step_name, local_slice_index, doc_filter={}):
     '''
     Checks if a slice has already been processed.
     '''
     collection = db[collection_name]
-    return collection.count_documents({'step_name': step_name, 'local_slice': local_slice_index}) > 0
+    doc_filter |= {'step_name': step_name, 'local_slice': local_slice_index}
+    return collection.count_documents(doc_filter) > 0
 
 def wipe_progress(db, collection_name, step_name=None):
     '''
