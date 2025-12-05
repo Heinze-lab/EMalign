@@ -17,7 +17,6 @@ from tqdm import tqdm
 
 from sofima import mesh
 from sofima.warp import ndimage_warp
-from emprocess.utils.io import get_dataset_attributes, set_dataset_attributes
 from emprocess.utils.mask import compute_greyscale_mask, mask_to_bbox
 
 from emalign.align_z.align_z import compute_flow_dataset, get_inv_map_mod
@@ -159,7 +158,7 @@ def align_stack_z(destination_path,
         write_data(destination_mask, data_mask, z_offset, np.abs(xy_offset))
 
         attrs['z_aligned'] = True
-        set_dataset_attributes(dataset, attrs)
+        set_store_attributes(dataset, attrs)
         return True
         
     # Compute flow and save to file
@@ -186,10 +185,9 @@ def align_stack_z(destination_path,
     # k0 = 0.01 # inter-section springs (elasticity). High k0 results in images that tend to 'fold' onto themselves
     # k = 0.4 # intra-section springs (elasticity). Increase if data deforms too much
     # gamma = 0.5 # dampening factor. Increase if data drift over time
-    out_path_meshes = os.path.dirname(destination_path) + '/flow_meshes'
+    out_path_meshes = os.path.dirname(destination_path) + '/meshes'
     os.makedirs(out_path_meshes, exist_ok=True)
-    inv_map_path = os.path.join(out_path_meshes, dataset_name + '.npy')
-    vmax_path = os.path.join(out_path_meshes, dataset_name + '_vmax.npy')
+    inv_map_path = os.path.join(out_path_meshes, dataset_name + '_inv_map.zarr')
     mesh_config_args = {
         'dt': 0.001,
         'gamma': 0.5,
@@ -208,12 +206,71 @@ def align_stack_z(destination_path,
     mesh_config = mesh.IntegrationConfig(**mesh_config_args)
 
     if not os.path.exists(inv_map_path):
-        inv_map, _, v_max = get_inv_map_mod(flow, stride, dataset_name, mesh_config)
-        np.save(inv_map_path, inv_map)
-        np.save(vmax_path, v_max)
+        inv_map, _, _ = get_inv_map_mod(flow, stride, dataset_name, mesh_config)
+
+        # Create and write inv_map tensorstore
+        inv_map_store = open_store(
+            inv_map_path,
+            mode='a',
+            dtype=ts.float32,
+            shape=list(inv_map.shape),  # [2, z, y, x]
+            chunks=[2, 1, min(512, inv_map.shape[2]), min(512, inv_map.shape[3])],
+            axis_labels=['c', 'z', 'y', 'x']
+        )
+        inv_map_store[:].write(inv_map).result()
+
+        # Save mesh integration config as attributes
+        set_store_attributes(inv_map_store, {
+            'mesh_config': mesh_config_args,
+            'stride': stride,
+            'dataset_name': dataset_name,
+            'description': 'Inverse displacement map from mesh relaxation'
+        })
     else:
-        inv_map = np.load(inv_map_path)
-    
+        # Load from existing tensorstore, but first validate parameters
+        inv_map_store = open_store(inv_map_path, mode='r', dtype=ts.float32)
+        stored_attrs = get_store_attributes(inv_map_store)
+
+        # Check if mesh_config and stride match current settings
+        params_match = (
+            stored_attrs.get('mesh_config') == mesh_config_args and
+            stored_attrs.get('stride') == stride
+        )
+
+        if not params_match and overwrite:
+            logging.warning(f'Stored mesh parameters do not match current settings. Recomputing inverse map.')
+            logging.info(f'Stored mesh_config: {stored_attrs.get("mesh_config")}')
+            logging.info(f'Current mesh_config: {mesh_config_args}')
+            logging.info(f'Stored stride: {stored_attrs.get("stride")}, Current stride: {stride}')
+
+            # Recompute with current parameters
+            inv_map, _, _ = get_inv_map_mod(flow, stride, dataset_name, mesh_config)
+
+            # Overwrite existing store
+            inv_map_store = open_store(
+                inv_map_path,
+                mode='w',
+                dtype=ts.float32,
+                shape=list(inv_map.shape),
+                chunks=[2, 1, min(512, inv_map.shape[2]), min(512, inv_map.shape[3])],
+                axis_labels=['c', 'z', 'y', 'x']
+            )
+            inv_map_store[:].write(inv_map).result()
+
+            # Update attributes with current settings
+            set_store_attributes(inv_map_store, {
+                'mesh_config': mesh_config_args,
+                'stride': stride,
+                'dataset_name': dataset_name,
+                'description': 'Inverse displacement map from mesh relaxation'
+            })
+        elif params_match:
+            logging.info('Loading existing mesh')
+            # Parameters match, safe to use cached inverse map
+            inv_map = inv_map_store[:].read().result()
+        else:
+            raise RuntimeError('Stored mesh parameters do not match current settings but overwrite is set to False.')
+
     #---------- Render data ----------#
     # Get first slice
     if first_slice is None:
@@ -334,7 +391,7 @@ def align_stack_z(destination_path,
                    write_mask,
                    np.abs(xy_offset) + np.array([x1, y1]), 
                    1, None)
-
+        
         # Log progress
         metadata = {
             'empty_slice': False,
@@ -349,13 +406,16 @@ def align_stack_z(destination_path,
     logging.info(f'Skipped already processed slices: {skipped}')
 
     # Add an attribute to keep track of what datasets have been aligned already
-    attrs['z_aligned'] = True
-    set_dataset_attributes(dataset, attrs)
+    attrs['z_aligned'] = True 
+    set_store_attributes(dataset, attrs)
 
     return True
 
 
 def write_data(destination, data, z, mask=None, xy_offset=[0,0], save_downsampled=1, ds_destination=None):
+    # Update bounds just in case the view we have is out of date
+    destination = destination.resolve().result()
+
     tasks = []
     x_off, y_off = xy_offset
 
@@ -370,11 +430,13 @@ def write_data(destination, data, z, mask=None, xy_offset=[0,0], save_downsample
         og_data = destination[z, y_off:y+y_off, x_off:x+x_off].read().result()
         og_data[mask] = data[mask]
         data = og_data
-    
+
     tasks.append(destination[z, y_off:y+y_off, x_off:x+x_off].write(data).result())
 
     # Write downsampled data for inspection
     if save_downsampled > 1 and ds_destination is not None:
+        ds_destination = ds_destination.resolve().result()
+
         ds_data = cv2.resize(data, None, fx=1/save_downsampled, fy=1/save_downsampled)
         y,x = ds_data.shape
         x_off, y_off = (np.array(xy_offset) / save_downsampled).astype(int)
@@ -383,7 +445,7 @@ def write_data(destination, data, z, mask=None, xy_offset=[0,0], save_downsample
             ds_destination = ds_destination.resize(exclusive_max=new_max, expand_only=True).result()
 
         tasks.append(ds_destination[z, y_off:y+y_off, x_off:x+x_off].write(ds_data).result())
-    
+
     return tasks
 
 if __name__ == '__main__':
