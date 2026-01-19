@@ -8,6 +8,7 @@ from glob import glob
 
 from emalign.align_z.utils import get_ordered_datasets
 from emalign.io import open_store
+from emalign.io.store import find_ref_slice
 from emalign.visualize.nglancer import add_layers, start_nglancer_viewer
 
 
@@ -79,7 +80,7 @@ def inspect_dataset(
         print(f'Dataset shape (ZYX):\n    {dataset.shape}')
         sys.exit()
         
-    modes = ['z_transitions', 'all_ds']
+    modes = ['z_transitions', 'all_ds', 'all_ds_first_z']
     if mode is not None and mode not in modes:
         raise ValueError(f'Invalid mode. Must be one of: {modes}')
 
@@ -137,7 +138,21 @@ def inspect_dataset(
 
         for dataset_path in dataset_paths:
             dataset_name = os.path.basename(dataset_path)
-            d = read_data(dataset_path, data_range=tuple(data_range), keep_missing=keep_missing)
+            d = read_data(dataset_path, bounding_box=bounding_box, keep_missing=keep_missing)
+            visible = dataset_path == dataset_paths[0]
+            add_layers([d], 
+                       viewer, 
+                       names=[dataset_name], 
+                       voxel_offsets=[voxel_offset],
+                       visible=visible,
+                       clear_viewer=False)
+    elif mode == 'all_ds_first_z':
+        dataset_paths = [d for d in sorted(glob(os.path.join(dataset_path, '*'))) if '_mask' not in d]
+
+        for dataset_path in dataset_paths:
+            dataset_name = os.path.basename(dataset_path)
+            dataset = open_store(dataset_path, mode='r', dtype=ts.uint8)
+            d, _ = find_ref_slice(dataset)
             visible = dataset_path == dataset_paths[0]
             add_layers([d], 
                        viewer, 
