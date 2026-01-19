@@ -14,7 +14,8 @@ def open_store(
     shape: Optional[List[int]] = None,
     chunks: Optional[List[int]] = None,
     axis_labels: Optional[List[str]] = None,
-    fill_value: Optional[Union[float, int, bool]] = None
+    fill_value: Optional[Union[float, int, bool]] = None,
+    allow_missing: Optional[bool] = False
 ) -> ts.TensorStore:
     '''Open or create a Zarr store using TensorStore.
 
@@ -39,6 +40,7 @@ def open_store(
             - ['z', 'a', 'b'] for transformation matrices
             If None, will auto-infer based on shape dimensionality. Default: None.
         fill_value (float, int, bool, or None): Fill value for unwritten array elements. Only used when creating a new store. Default: None.
+        allow_missing (bool): Whether to allow the store to be missing. If False, will raise an IO error. If True, will return None. Default: False.
 
     Returns:
         tensorstore.TensorStore: Opened tensorstore object ready for reading or writing.
@@ -88,10 +90,14 @@ def open_store(
     path = os.path.abspath(path)
     path_exists = os.path.exists(path)
 
+    if not path_exists:
+        if not allow_missing:
+            raise IOError(f'Zarr store not found at path: {path}')
+        else:
+            return None
+
     # Mode: 'r' - Read only (must exist)
     if mode == 'r':
-        if not path_exists:
-            raise IOError(f'Zarr store not found at path: {path}')
         spec = {
             'driver': 'zarr',
             'kvstore': {'driver': 'file', 'path': path}
@@ -100,8 +106,6 @@ def open_store(
 
     # Mode: 'r+' - Read/write (must exist)
     if mode == 'r+':
-        if not path_exists:
-            raise IOError(f'Zarr store not found at path: {path}')
         spec = {
             'driver': 'zarr',
             'kvstore': {'driver': 'file', 'path': path}

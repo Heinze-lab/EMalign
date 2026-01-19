@@ -97,17 +97,8 @@ def align_stack_z(destination_path,
     if local_z_min is not None and local_z_max is not None:
         dataset = dataset[local_z_min: local_z_max]
 
-    try:
-        dataset_mask = open_store(os.path.abspath(dataset_path) + '_mask', mode='r', dtype=ts.bool)
-
-        dataset_mask = dataset_mask[dataset.domain]
-    except ValueError as e:
-        if 'NOT_FOUND' in str(e):
-            dataset_mask = None
-        else:
-            raise e
-    except Exception as e:
-        raise e
+    dataset_mask = open_store(os.path.abspath(dataset_path) + '_mask', mode='r', dtype=ts.bool, allow_missing=True)
+    dataset_mask = dataset_mask[dataset.domain] if dataset_mask is not None else dataset_mask
         
     # Check whether stack was processed
     attrs = get_store_attributes(dataset)
