@@ -178,9 +178,14 @@ def check_stacks_to_invert(stack_list,
     with futures.ThreadPoolExecutor(num_workers) as tpe:
         fs = {}
         for stack_path in sorted(stack_list):
-            stack_name = stack_path.split('/')[-2]
-            fs[stack_name] = tpe.submit(load_tif, 
-                                        glob(stack_path + '*.tif')[0], 1, {})
+            stack_name = os.path.basename(os.path.normpath(stack_path))
+            tif_files = glob(os.path.join(stack_path, '*.tif'))
+            if not tif_files:
+                logging.warning(f'No TIF files found in {stack_path}, skipping')
+                to_invert[stack_name] = False
+                continue
+
+            fs[stack_name] = tpe.submit(load_tif, tif_files[0], 1, {})
 
         for i, (stack_name, f) in enumerate(fs.items()):
             arr = f.result()[0]
@@ -188,14 +193,14 @@ def check_stacks_to_invert(stack_list,
                         viewer,
                         names=[stack_name],
                         clear_viewer=True)
-            
-            answer = input(f'{str(i+1).zfill(2)}/{len(fs)} - Invert {stack_name}? (y/n) ').strip(' ')
-            while answer not in ['y', 'n', '']:
-                answer = input(f'{str(i).zfill(2)}/{len(fs)} - Please provide a valid answer for {stack_name}: (y/n) ')
 
-            if answer == 'y' or answer == '':
+            answer = input(f'{str(i+1).zfill(2)}/{len(fs)} - Invert {stack_name}? (y/n) ').strip(' ')
+            while answer.lower() not in ['y', 'n', '']:
+                answer = input(f'{str(i+1).zfill(2)}/{len(fs)} - Please provide a valid answer for {stack_name}: (y/n) ').strip(' ')
+
+            if answer.lower() == 'y':
                 to_invert.update({stack_name: True})
-            elif answer == 'n':
+            elif answer.lower() == 'n' or answer == '':
                 to_invert.update({stack_name: False})
     return to_invert
 
