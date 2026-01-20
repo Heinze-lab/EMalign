@@ -56,7 +56,7 @@ def _compute_flow(dataset,
                                 dataset_name + f'_transform')
     if os.path.exists(ds_flow_path):
         # Flow + Transformations exist
-        dataset_flow = open_store(ds_flow_path, mode='r', dtype=ts.float32)
+        dataset_flow = open_store(ds_flow_path, mode='r+', dtype=ts.float32)
         attrs = get_store_attributes(dataset_flow)
         assert stride == attrs['stride'], 'stride does not correspond with existing flow'
         assert patch_size == attrs['patch_size'], 'patch_size does not correspond with existing flow'
@@ -64,7 +64,7 @@ def _compute_flow(dataset,
         
         # If flow dataset exists but transformations is None, we assume we can find it in a dataset
         if transformations is None:
-            dataset_trsf = open_store(ds_trsf_path, mode='r', dtype=ts.float32)
+            dataset_trsf = open_store(ds_trsf_path, mode='r+', dtype=ts.float32)
     else:
         # Flow + Transformations are to be created from scratch
         dataset_flow = open_store(
