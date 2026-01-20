@@ -205,7 +205,7 @@ def align_stack_z(destination_path,
         'gamma': 0.5,
         'k0': 0.01,
         'k': 0.4,
-        'stride': (stride, stride),
+        'stride': [stride, stride],
         'num_iters': 1000,
         'max_iters': 100000,
         'stop_v_max': 0.01,
@@ -224,7 +224,7 @@ def align_stack_z(destination_path,
         inv_map_store = open_store(
             inv_map_path,
             mode='a',
-            dtype=ts.float32,
+            dtype=ts.float64,
             shape=list(inv_map.shape),  # [2, z, y, x]
             chunks=[2, 1, min(512, inv_map.shape[2]), min(512, inv_map.shape[3])],
             axis_labels=['c', 'z', 'y', 'x']
@@ -240,14 +240,11 @@ def align_stack_z(destination_path,
         })
     else:
         # Load from existing tensorstore, but first validate parameters
-        inv_map_store = open_store(inv_map_path, mode='r', dtype=ts.float32)
+        inv_map_store = open_store(inv_map_path, mode='r')
         stored_attrs = get_store_attributes(inv_map_store)
 
         # Check if mesh_config and stride match current settings
-        params_match = (
-            stored_attrs.get('mesh_config') == mesh_config_args and
-            stored_attrs.get('stride') == stride
-        )
+        params_match = stored_attrs.get('mesh_config') == mesh_config_args
 
         if not params_match and overwrite:
             logging.warning(f'Stored mesh parameters do not match current settings. Recomputing inverse map.')
@@ -262,7 +259,7 @@ def align_stack_z(destination_path,
             inv_map_store = open_store(
                 inv_map_path,
                 mode='w',
-                dtype=ts.float32,
+                dtype=ts.float64,
                 shape=list(inv_map.shape),
                 chunks=[2, 1, min(512, inv_map.shape[2]), min(512, inv_map.shape[3])],
                 axis_labels=['c', 'z', 'y', 'x']
