@@ -49,11 +49,11 @@ def _compute_flow(dataset,
     # Both transformations and flow are saved to file. They don't take much space but are slow to compute.
     scale_str = str(round(scale, 2)).replace('.', '_')
     ds_flow_path = os.path.join(destination_path,
-                                'flows',
-                                dataset_name + f'_flow{scale_str}x')
+                                f'flow{scale_str}x',
+                                dataset_name)
     ds_trsf_path = os.path.join(destination_path,
-                                'flows',
-                                dataset_name + f'_transform')
+                                'transform',
+                                dataset_name)
     if os.path.exists(ds_flow_path):
         # Flow + Transformations exist
         dataset_flow = open_store(ds_flow_path, mode='r+', dtype=ts.float32)
