@@ -199,7 +199,7 @@ def align_stack_z(destination_path,
     # gamma = 0.5 # dampening factor. Increase if data drift over time
     out_path_meshes = os.path.dirname(destination_path) + '/meshes'
     os.makedirs(out_path_meshes, exist_ok=True)
-    inv_map_path = os.path.join(out_path_meshes, dataset_name + '_inv_map.zarr')
+    inv_map_path = os.path.join(out_path_meshes, dataset_name + '_inv_map')
     mesh_config_args = {
         'dt': 0.001,
         'gamma': 0.5,
