@@ -90,7 +90,7 @@ def open_store(
     path = os.path.abspath(path)
     path_exists = os.path.exists(path)
 
-    if not path_exists:
+    if not path_exists and mode in ['r', 'r+']:
         if not allow_missing:
             raise IOError(f'Zarr store not found at path: {path}')
         else:
