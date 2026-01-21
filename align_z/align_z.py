@@ -10,7 +10,7 @@ import tensorstore as ts
 
 from connectomics.common import bounding_box
 from sofima import flow_field, flow_utils, map_utils, mesh
-from sofima.mesh import velocity_verlet, inplane_force, IntegrationConfig
+from sofima.mesh import relax_mesh, IntegrationConfig
 from tqdm import tqdm
 
 from emprocess.utils.mask import compute_greyscale_mask
@@ -398,123 +398,7 @@ def compute_flow_dataset(dataset,
 def get_inv_map(flow, stride, dataset_name, mesh_config=None):
 
     if mesh_config is None:
-        mesh_config = mesh.IntegrationConfig(dt=0.001, gamma=0.5, k0=0.01, k=0.1, stride=(stride, stride), num_iters=1000,
-                                            max_iters=100000, stop_v_max=0.005, dt_max=1000, start_cap=0.01,
-                                            final_cap=10, prefer_orig_order=True)
-
-    solved = [np.zeros_like(flow[:, 0:1, ...])]
-    origin = jnp.array([0., 0.])
-
-    for z in tqdm(range(0, flow.shape[1]),
-                  desc=f'{dataset_name}: Relaxing mesh',
-                  dynamic_ncols=True):
-        prev = map_utils.compose_maps_fast(flow[:, z:z+1, ...], origin, stride,
-                                           solved[-1], origin, stride)
-        x, _, _ = mesh.relax_mesh(np.zeros_like(solved[0]), prev, mesh_config)
-        solved.append(np.array(x))
-
-    solved = np.concatenate(solved, axis=1)
-
-    flow_bbox = bounding_box.BoundingBox(start=(0, 0, 0), size=(flow.shape[-1], flow.shape[-2], 1))
-
-    inv_map = map_utils.invert_map(solved, flow_bbox, flow_bbox, stride)
-
-    return inv_map, flow_bbox
-
-
-
-def relax_mesh_mod(
-    x: jnp.ndarray,
-    prev: jnp.ndarray | None,
-    config: IntegrationConfig,
-    mesh_force=inplane_force,
-    prev_fn=None,
-) -> tuple[jnp.ndarray, list[float], int]:
-  """Simulates mesh relaxation.
-
-  Args:
-    x: [2, z, y, x] array of mesh node positions
-    prev: optional [2, z, y, x] array against which to compute the force due to
-      0-length springs
-    config: simulation parameters
-    mesh_force: callable with the signature of `inplane_force` returning a field
-      representing internal mesh forces
-    prev_fn: callable taking the 'x' mesh array and returning the 'prev' array
-
-  Returns:
-    tuple of:
-      [2, z, x, y] array of updated mesh positions
-      list of kinetic energy history
-      number of simulation steps executed
-  """
-
-  t = 0
-  v = jnp.zeros_like(x)
-  dt = config.dt
-  alpha = config.alpha
-  e_kin = []
-  cap = config.start_cap
-
-  if config.start_cap != config.final_cap:
-    if not config.fire:
-      raise NotImplementedError(
-          'Adaptive force capping is only supported with FIRE.'
-      )
-    if config.cap_scale <= 1:
-      raise ValueError(
-          'The scaling factor for the force cap has to be larger '
-          'than 1 when the initial and final cap are different.'
-      )
-
-  if prev is not None and prev_fn is not None:
-    raise ValueError('Only one of: "prev" and "prev_fn" can be specified.')
-  
-  while t < config.max_iters:
-    state = velocity_verlet(
-        x,
-        v,
-        prev,
-        config,
-        fire_dt=dt,
-        fire_alpha=alpha,
-        force_cap=cap,
-        mesh_force=mesh_force,
-        prev_fn=prev_fn,
-    )
-    t += config.num_iters
-    x, v = state[:2]
-    v_mag = jnp.linalg.norm(v, axis=0)
-    e_kin.append(float(jnp.sum(v_mag**2)))
-    v_max = jnp.max(v_mag)
-
-    if config.fire:
-      dt, alpha, n_pos, cap = state[-4:]
-    #   logging.info(
-    #       't=%r: dt=%f, alpha=%f, n_pos=%d, cap=%f, v_max=%f, e_kin=%f',
-    #       t,
-    #       dt,
-    #       alpha,
-    #       n_pos,
-    #       cap,
-    #       v_max,
-    #       e_kin[-1],
-    #   )
-
-    if v_max < config.stop_v_max:
-      if cap >= config.final_cap:
-        break
-
-      # Increase cap to ensure progress towards the termination condition.
-      cap = min(cap * config.cap_scale, config.final_cap)
-
-  return x, e_kin, t, v_max # mod
-
-
-
-def get_inv_map_mod(flow, stride, dataset_name, mesh_config=None):
-
-    if mesh_config is None:
-        mesh_config = mesh.IntegrationConfig(dt=0.001, gamma=0.5, k0=0.01, k=0.1, stride=(stride, stride), num_iters=1000,
+        mesh_config = IntegrationConfig(dt=0.001, gamma=0.5, k0=0.01, k=0.1, stride=(stride, stride), num_iters=1000,
                                             max_iters=100000, stop_v_max=0.005, dt_max=1000, start_cap=0.01,
                                             final_cap=10, prefer_orig_order=True)
 
@@ -534,9 +418,8 @@ def get_inv_map_mod(flow, stride, dataset_name, mesh_config=None):
 
         ref = map_utils.compose_maps_fast(f, origin, stride,
                                            ref, origin, stride)
-        x, _, _, v_max = relax_mesh_mod(np.zeros_like(solved[0]), ref, mesh_config)
+        x, _, _ = relax_mesh(np.zeros_like(solved[0]), ref, mesh_config)
         solved.append(np.array(x))
-        all_vmax.append(v_max)
         ref = solved[-1]
 
     solved = np.concatenate(solved, axis=1)
@@ -545,4 +428,4 @@ def get_inv_map_mod(flow, stride, dataset_name, mesh_config=None):
 
     inv_map = map_utils.invert_map(solved, flow_bbox, flow_bbox, stride)
 
-    return inv_map, flow_bbox, np.array(all_vmax)
+    return inv_map, flow_bbox

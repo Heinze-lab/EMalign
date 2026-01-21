@@ -19,7 +19,7 @@ from sofima import mesh
 from sofima.warp import ndimage_warp
 from emprocess.utils.mask import compute_greyscale_mask, mask_to_bbox
 
-from emalign.align_z.align_z import compute_flow_dataset, get_inv_map_mod
+from emalign.align_z.align_z import compute_flow_dataset, get_inv_map
 from emalign.io.store import find_ref_slice, open_store, set_store_attributes, get_store_attributes, write_data
 from emalign.arrays.utils import resample, pad_to_shape
 from emalign.io.progress import get_mongo_client, get_mongo_db, wipe_progress, check_progress, log_progress
@@ -218,7 +218,7 @@ def align_stack_z(destination_path,
     mesh_config = mesh.IntegrationConfig(**mesh_config_args)
 
     if not os.path.exists(inv_map_path):
-        inv_map, _, _ = get_inv_map_mod(flow, stride, dataset_name, mesh_config)
+        inv_map, _ = get_inv_map(flow, stride, dataset_name, mesh_config)
 
         # Create and write inv_map tensorstore
         inv_map_store = open_store(
@@ -253,7 +253,7 @@ def align_stack_z(destination_path,
             logging.info(f'Stored stride: {stored_attrs.get("stride")}, Current stride: {stride}')
 
             # Recompute with current parameters
-            inv_map, _, _ = get_inv_map_mod(flow, stride, dataset_name, mesh_config)
+            inv_map, _ = get_inv_map(flow, stride, dataset_name, mesh_config)
 
             # Overwrite existing store
             inv_map_store = open_store(
