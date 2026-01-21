@@ -36,11 +36,11 @@ def align_stack_z(destination_path,
                   z_offset,
                   scale, 
                   flow_config,
-                  mesh_config,
                   warp_config,
                   first_slice,
                   yx_target_resolution,
-                  project_name='OV_0',
+                  mesh_config={},
+                  project_name='OV',
                   mongodb_config_filepath=None,
                   local_z_min=None,
                   local_z_max=None,
@@ -77,9 +77,22 @@ def align_stack_z(destination_path,
     max_magnitude = flow_config['max_magnitude']
 
     # Mesh opti parameters
-    k0    = mesh_config['k0'] 
-    k     = mesh_config['k'] 
-    gamma = mesh_config['gamma']
+    mesh_config_args = { # Default config
+        'dt': 0.001,
+        'gamma': 0.5,
+        'k0': 0.01,
+        'k': 0.4,
+        'num_iters': 1000,
+        'max_iters': 100000,
+        'stop_v_max': 0.01,
+        'dt_max': 1000,
+        'start_cap': 0.1,
+        'final_cap': 1.0,
+        'prefer_orig_order': True,
+        'remove_drift': False # for some reason, setting this to True actually introduces drift
+    }
+    mesh_config_args.update(mesh_config) # Update with user-defined values if they exist
+    mesh_config_args['stride'] = [stride, stride]
 
     # Warp parameters
     work_size = warp_config['work_size']   
@@ -91,6 +104,12 @@ def align_stack_z(destination_path,
     
     # Open input dataset
     dataset = open_store(dataset_path, mode='r', dtype=ts.uint8)
+
+    # Check whether stack was processed
+    attrs = get_store_attributes(dataset)
+    if attrs.get('z_aligned', False) == True and not overwrite:
+        logging.info(f'Dataset {dataset_name} was already processed and will be skipped.')
+        return False
     
     # Keep within bounds
     original_shape = dataset.shape
@@ -99,12 +118,6 @@ def align_stack_z(destination_path,
 
     dataset_mask = open_store(os.path.abspath(dataset_path) + '_mask', mode='r', dtype=ts.bool, allow_missing=True)
     dataset_mask = dataset_mask[dataset.domain] if dataset_mask is not None else dataset_mask
-        
-    # Check whether stack was processed
-    attrs = get_store_attributes(dataset)
-    if attrs.get('z_aligned', False) == True and not overwrite:
-        logging.info(f'Dataset {dataset_name} was already processed and will be skipped.')
-        return False
 
     # Make the resolution match the target
     res = attrs['resolution'][-1]
@@ -190,31 +203,11 @@ def align_stack_z(destination_path,
                                            z_offset=z_offset)
 
     #---------- Compute mesh ----------#
-    # Elasticity ratio = k0/k (the larger the more deformation)
-    # The ratio is what matters for how much the data is deformed
-    # However smaller numbers might limit the necessary deformation of the mesh
-    # Good values:
-    # k0 = 0.01 # inter-section springs (elasticity). High k0 results in images that tend to 'fold' onto themselves
-    # k = 0.4 # intra-section springs (elasticity). Increase if data deforms too much
-    # gamma = 0.5 # dampening factor. Increase if data drift over time
-    out_path_meshes = os.path.dirname(destination_path) + '/meshes'
+    out_path_meshes = os.path.join(os.path.dirname(destination_path), 
+                                   'z_intermediate', 
+                                   'inverse_map')
     os.makedirs(out_path_meshes, exist_ok=True)
-    inv_map_path = os.path.join(out_path_meshes, dataset_name + '_inv_map')
-    mesh_config_args = {
-        'dt': 0.001,
-        'gamma': 0.5,
-        'k0': 0.01,
-        'k': 0.4,
-        'stride': [stride, stride],
-        'num_iters': 1000,
-        'max_iters': 100000,
-        'stop_v_max': 0.01,
-        'dt_max': 1000,
-        'start_cap': 0.1,
-        'final_cap': 1.0,
-        'prefer_orig_order': True,
-        'remove_drift': False # for some reason, setting this to True actually introduces drift
-    }
+    inv_map_path = os.path.join(out_path_meshes, dataset_name)
     mesh_config = mesh.IntegrationConfig(**mesh_config_args)
 
     if not os.path.exists(inv_map_path):
