@@ -128,6 +128,29 @@ def compute_alignment_path(datasets,
                            z_offsets,
                            target_resolution,
                            scale=0.2):
+    '''Compute alignment paths between overlapping datasets using SIFT feature matching.
+
+    Analyzes Z-overlap between datasets and builds a graph where edges represent
+    valid alignment transitions (verified by SIFT matching at slice boundaries).
+    Returns paths from a root dataset (one with no overlap) to all other datasets.
+
+    Args:
+        datasets (list): List of tensorstore.TensorStore objects to align.
+        z_offsets (np.ndarray): Array of shape (N, 3) with [z, y, x] voxel offsets for each dataset.
+        target_resolution (int or list): Target resolution in nm for SIFT matching. If int, used for both Y and X.
+        scale (float, optional): Scale factor for SIFT feature detection. Defaults to 0.2.
+
+    Raises:
+        RuntimeError: If no root dataset is found (all datasets have Z overlap).
+        RuntimeError: If some datasets are disconnected from the main alignment graph.
+
+    Returns:
+        tuple: (root_node, paths, reverse_z, ds_bounds) where:
+            - root_node (str): Name of the root dataset from which alignment starts.
+            - paths (list): List of lists of dataset names defining alignment order.
+            - reverse_z (list): List of bools indicating if path traverses Z in reverse.
+            - ds_bounds (dict): Dict mapping dataset names to (z_min, z_max) bounds.
+    '''
     
     if isinstance(target_resolution, int):
         target_resolution = [target_resolution, target_resolution]
