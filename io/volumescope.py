@@ -1,5 +1,5 @@
 '''
-Utilities for finding and reading metadata produced by the ThermoFisher Volumescope microscope.
+Utilities for finding and reading files produced by the ThermoFisher MAPs software.
 '''
 
 
