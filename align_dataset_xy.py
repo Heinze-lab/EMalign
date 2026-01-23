@@ -62,6 +62,7 @@ def align_dataset_xy(config_path,
     apply_gaussian  = main_config['apply_gaussian']
     apply_clahe     = main_config['apply_clahe']
     stack_configs   = main_config['stack_configs']
+    io_mode         = main_config['io_mode']
 
     if not output_path.endswith('.zarr'):
         raise RuntimeError('Output path must be a zarr container (.zarr)')
@@ -93,6 +94,7 @@ def align_dataset_xy(config_path,
                        apply_gaussian=apply_gaussian,
                        apply_clahe=apply_clahe,
                        project_name=project_name,
+                       io_mode=io_mode,
                        mongodb_config_filepath=mongodb_config_filepath,
                        num_cores=num_workers,
                        overwrite=overwrite,

@@ -148,7 +148,8 @@ def prep_align_stacks(main_dir,
                 'stride': stride,
                 'overlap': overlap,
                 'apply_gaussian': apply_gaussian,
-                'apply_clahe': apply_clahe
+                'apply_clahe': apply_clahe,
+                'io_mode': io_mode
                 }
 
     with open(os.path.join(config_dir, 'main_config.json'), 'w') as f:

@@ -26,6 +26,7 @@ from emalign.arrays.stacks import Stack, parse_stack_info
 from emalign.arrays.tile_map import get_tile_map_margins
 from emalign.io import open_store, set_store_attributes
 from emalign.io.progress import get_mongo_client, get_mongo_db, log_progress, check_progress, wipe_progress
+from emalign.io.backend import get_io_backend
 
 
 logging.basicConfig(level=logging.INFO)
@@ -43,6 +44,7 @@ def align_stack_xy(output_path,
                    apply_gaussian,
                    apply_clahe,
                    project_name,
+                   io_mode,
                    mongodb_config_filepath=None,
                    num_cores=1,
                    overwrite=False,
@@ -69,6 +71,7 @@ def align_stack_xy(output_path,
 
     client = get_mongo_client(mongodb_config_filepath)
     db = get_mongo_db(client, project_name)
+    io_backend = get_io_backend(io_mode)
 
     if wipe_progress_flag:
         logging.info(f"Wiping progress for stack: {stack_name}")
@@ -79,7 +82,8 @@ def align_stack_xy(output_path,
 
     stack = Stack(stack_name=stack_name, 
                   tile_maps_paths=tile_maps_paths, 
-                  tile_maps_invert=tile_maps_invert)
+                  tile_maps_invert=tile_maps_invert,
+                  io_backend=io_backend)
 
     # Variables
     zarr_path = os.path.join(output_path, 'xy_intermediate', stack.stack_name)
