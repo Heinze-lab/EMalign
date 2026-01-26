@@ -198,7 +198,7 @@ if __name__ == '__main__':
                         dest='mode',
                         type=str,
                         default=None,
-                        help='Visualization mode. One of: z_transitions, all_ds')
+                        help='Visualization mode. One of: z_transitions, all_ds, all_ds_first_z')
     parser.add_argument('--port',
                         metavar='PORT',
                         dest='bind_port',
