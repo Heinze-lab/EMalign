@@ -4,7 +4,7 @@ This guide explains how to add support for a new microscope or file format.
 
 ## Overview
 
-IO backends parse tile filenames and metadata from different microscope systems. Each backend is a Python module in `emalign/io/` that provides standardized functions for extracting tile positions, slice indices, and resolution information.
+IO backends parse tile filenames and metadata specific to the microscope output. Each backend is a Python module in `emalign/io/` that provides standardized functions for extracting tile positions, slice indices, and resolution information.
 Currently, parsing functions rely on information contained in the file name, but it could be parsed from anything as long as the output is consistent.
 
 ## Required Interface
@@ -77,7 +77,7 @@ _BACKENDS = {
 The backend is selected via the `mode` argument in config preparation:
 
 ```bash
-python -m emalign.prep_config_xy --mode my_microscope ...
+python prep_config_xy.py --mode my_microscope ...
 ```
 
 In code:
