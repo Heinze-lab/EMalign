@@ -7,7 +7,7 @@ import tensorstore as ts
 from glob import glob
 
 from emalign.align_z.utils import get_ordered_datasets
-from emalign.io import open_store
+from emalign.io.store import open_store
 from emalign.io.store import find_ref_slice
 from emalign.visualize.nglancer import add_layers, start_nglancer_viewer
 
