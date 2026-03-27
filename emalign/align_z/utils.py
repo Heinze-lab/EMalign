@@ -54,7 +54,7 @@ def get_ordered_datasets(config_paths, exclude=[]):
 
             for ds in dataset_paths:
                 check = [pattern in ds for pattern in exclude]
-                if any(check) or ds.endswith('_mask'):
+                if any(check) or os.path.abspath(ds).endswith('_mask'):
                     # Always exclude masks from query
                     continue
                 dataset = open_store(ds, mode='r')
@@ -214,7 +214,7 @@ def compute_alignment_path(datasets,
     if len(root_datasets) == 0:
         raise RuntimeError('No potential root dataset was found: no dataset with no overlap along Z.')
 
-    root_node_idx = root_datasets[0][0]
+    root_node_idx = root_datasets.iloc[0][0]
     root_node = os.path.basename(os.path.abspath(datasets_nomask[root_node_idx].kvstore.path))
 
     # Compute valid alignment paths
@@ -230,7 +230,8 @@ def compute_alignment_path(datasets,
                 # Check for match at the boundary of the relevant range
                 ref = _get_slice(datasets_nomask[u], curr_group.z.max() - z_offsets[u, 0], reverse=True)
                 mov = _get_slice(datasets_nomask[v], next_group.z.min() - z_offsets[v, 0], reverse=False)
-                M, out_shape, ref_offset, valid_estimate, _ = estimate_transform_sift(ref.copy(), mov.copy(), scale=scale, refine_estimate=True)
+                M, out_shape, ref_offset, valid_estimate, _ = estimate_transform_sift(ref.copy(), mov.copy(), 
+                                                                                      scale=scale, refine_estimate=True)
 
                 if valid_estimate:
                     # Keep track of everything, mostly for debugging
