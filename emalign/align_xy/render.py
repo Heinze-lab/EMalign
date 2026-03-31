@@ -48,6 +48,9 @@ def render_slice_xy(destination,
     '''
 
     if len(tile_map) > 1:
+        # warp.render_tiles only uses workers to distribute tiles
+        parallelism = min(len(tile_map.keys()), parallelism)
+
         # Render stitched image
         stitched, mask, warped_tiles = warp.render_tiles(tile_map, meshes, 
                                                     tile_masks=tile_masks, 
