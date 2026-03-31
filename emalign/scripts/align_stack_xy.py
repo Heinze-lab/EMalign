@@ -124,7 +124,24 @@ def align_stack_xy(output_path,
     ### PROCESS STACK ###
     #####################
     step_name = 'align_xy'
-    pbar = tqdm(stack.slices, position=2, desc=f'{stack.stack_name}: Processing', leave=False)
+    
+    # Compute overlap for the first slice and for others when necessary
+    compute_overlap=True
+
+    # Check what is to be processed
+    if overwrite:
+        # Process everything
+        slices_to_process = stack.slices
+    else:
+        # Skip already processed
+        slices_to_process = [z for z in stack.slices
+                            if not check_progress(db, stack.stack_name, step_name, z - z_offset)]
+    
+    ignore_slices_local, ignore_slices_global = ignore_slices
+    n_skip = len(stack.slices) - len(slices_to_process)
+    if n_skip:
+        logging.info(f'{stack.stack_name}: Skipping {n_skip} already-processed slices')
+    pbar = tqdm(slices_to_process, position=2, desc=f'{stack.stack_name}: Processing', leave=False)
     for z in pbar:
         if z in ignore_slices_global or z - z_offset in ignore_slices_local:
             metadata = {
@@ -140,61 +157,79 @@ def align_stack_xy(output_path,
         metadata = {}
         if len(tile_map) > 1:
             # There are more than one tiles    
-            for scale in [0.1, 0.2, 0.5, 1]:
-                overlap = tm.estimate_overlap(scale=scale)
-                if overlap > 0:
+            for attempt in range(2):
+                ### Attempt alignment ###
+                if compute_overlap:
+                    pbar.set_description(f'{stack.stack_name}: Computing overlap...')
+                    # Compute overlap for better coarse mesh estimation
+                    for scale in [0.1, 0.2, 0.5, 1]:
+                        overlap = tm.estimate_overlap(scale=scale)
+                        if overlap > 0:
+                            break
+                    else:
+                        raise RuntimeError('No overlap found between tiles for this slice.')
+                    compute_overlap = False
+
+                pbar.set_description(f'{stack.stack_name}: Computing coarse mesh...')
+                cx, cy, coarse_mesh = get_coarse_offset(tile_map, 
+                                                        tm.tile_space,
+                                                        overlap=overlap,
+                                                        overlap_pad=80,
+                                                        overlap_cap=1000
+                                                    )
+
+                if overlap > 160:
+                    # Generally good parameters
+                    render_stride=stride
+                    patch_size = 160
+                    k0 = 0.01
+                    k = 0.1
+                    gamma = 0.5
+
+                    # Determine margin by finding the minimum displacement in X or Y between adjacent tiles
+                    # Margin is how many pixels to ignore from the tiles when rendering. Too high leaves a delimitation, too low leaves a gap
+                    min_displacement = np.abs(np.concatenate([cx[0,0,0,:][~np.isnan(cx[0,0,0,:])], 
+                                                            cy[1,0,0,:][~np.isnan(cy[1,0,0,:])]])).min()
+                    margin = min(200, int(min_displacement // 2 * 0.9))
+                else:
+                    # Parameters tested for very small overlap
+                    render_stride=10
+                    patch_size=30
+                    k0=0.07
+                    k=0.2
+                    gamma=0.5
+                    margin=10
+
+                pbar.set_description(f'{stack.stack_name}: Computing elastic mesh...')
+                meshes, _ = get_elastic_mesh(tile_map, 
+                                            cx, 
+                                            cy, 
+                                            coarse_mesh,
+                                            stride=render_stride,
+                                            patch_size=patch_size,
+                                            k0=k0,
+                                            k=k,
+                                            gamma=gamma,
+                                            batch_size=256
+                                                )
+                # Ensure that first tiles acquired are rendered last because they are sharper and should be on top
+                meshes = {k:meshes[k] for k in sorted(meshes)[::-1]}
+                margin_map = get_tile_map_margins(tm.tile_space, margin)
+                                        
+                pbar.set_description(f'{stack.stack_name}: Rendering...')
+                min_stitch_score = 0.8
+                dataset, dataset_mask, stitch_score = render_slice_xy(dataset, z-z_offset, tile_map, meshes, render_stride, tm.tile_masks, 
+                                                                    parallelism=num_cores, margin_overrides=margin_map, dest_mask=dataset_mask, 
+                                                                    resize_canvas=True, min_stitch_score=min_stitch_score)
+                if np.min(stitch_score) < min_stitch_score and attempt == 0:
+                    # Stitch was not good enough, let's try again from scratch
+                    compute_overlap = True
+                elif np.min(stitch_score) < min_stitch_score and attempt > 0:
+                    raise RuntimeError('Slice could not be stitched properly.')
+                else:
+                    # Stitch was good, data was written to file, let's move on
                     break
-            else:
-                raise RuntimeError('No overlap found between tiles for this slice.')
 
-            pbar.set_description(f'{stack.stack_name}: Computing elastic meshes...')
-            # Compute overlap for better coarse mesh estimation
-            overlap_pad = 80
-            cx, cy, coarse_mesh = get_coarse_offset(tile_map, 
-                                                    tm.tile_space,
-                                                    overlap=[overlap,               # try first
-                                                             overlap+overlap_pad]   # try second
-                                                   )
-
-            if overlap > 160:
-                # Generally good parameters
-                render_stride=stride
-                patch_size = 160
-                k0 = 0.01
-                k = 0.1
-                gamma = 0.5
-
-                # Determine margin by finding the minimum displacement in X or Y between adjacent tiles
-                # Margin is how many pixels to ignore from the tiles when rendering. Too high leaves a delimitation, too low leaves a gap
-                min_displacement = np.abs(np.concatenate([cx[0,0,0,:][~np.isnan(cx[0,0,0,:])], 
-                                                          cy[1,0,0,:][~np.isnan(cy[1,0,0,:])]])).min()
-                margin = min(200, int(min_displacement // 2 * 0.9))
-            else:
-                # Parameters tested for very small overlap
-                render_stride=10
-                patch_size=30
-                k0=0.07
-                k=0.2
-                gamma=0.5
-                margin=10
-            
-            meshes = get_elastic_mesh(tile_map, 
-                                      cx, 
-                                      cy, 
-                                      coarse_mesh,
-                                      stride=render_stride,
-                                      patch_size=patch_size,
-                                      k0=k0,
-                                      k=k,
-                                      gamma=gamma)
-            # Ensure that first tiles acquired are rendered last because they are sharper and should be on top
-            meshes = {k:meshes[k] for k in sorted(meshes)[::-1]}
-            margin_map = get_tile_map_margins(tm.tile_space, margin)
-                                      
-            pbar.set_description(f'{stack.stack_name}: Rendering...')
-            parallelism = min(num_cores, len(tile_map))
-            dataset, dataset_mask, stitch_score = render_slice_xy(dataset, z-z_offset, tile_map, meshes, render_stride, tm.tile_masks, 
-                                           parallelism=parallelism, margin_overrides=margin_map, dest_mask=dataset_mask, resize_canvas=True)
             metadata = {
                 'mesh_parameters':{
                                 'stride':render_stride,
@@ -207,12 +242,14 @@ def align_stack_xy(output_path,
                 'margin': margin,
                 'stitch_score': float(np.median(stitch_score)),
                 'tile_space': list(map(int, tm.tile_space)),
-                'missing_tile': tm.missing_tiles
+                'missing_tile': tm.missing_tiles,
+                'retried': attempt>0
                     }
         else:
             # There is only one tile, no need to compute anything
             pbar.set_description(f'{stack.stack_name}: Writing unique tile...')
-            dataset, dataset_mask, stitch_score = render_slice_xy(dataset, z-z_offset, tile_map, None, None, None, parallelism=1, dest_mask=dataset_mask, resize_canvas=True)
+            dataset, dataset_mask, stitch_score = render_slice_xy(dataset, z-z_offset, tile_map, None, None, None, 
+                                                                  parallelism=1, dest_mask=dataset_mask, resize_canvas=True)
             metadata = {
                 'tile_space': list(map(int, tm.tile_space)),
                 'missing_tile': tm.missing_tiles
