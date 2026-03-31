@@ -147,4 +147,7 @@ def parse_stack_info(config_path):
 
     tile_maps_invert = {tuple(int(i) for i in re.findall(r'\b\d+\b', k)): v 
                             for k,v in config['tile_maps_invert'].items()}
-    return tile_maps_paths, tile_maps_invert
+    
+    ignore_slices = [config.get('ignore_slices_local', []), 
+                     config.get('ignore_slices_global', [])]
+    return tile_maps_paths, tile_maps_invert, ignore_slices

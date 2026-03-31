@@ -45,6 +45,7 @@ def align_stack_xy(output_path,
                    apply_clahe,
                    project_name,
                    io_mode,
+                   ignore_slices=[],
                    mongodb_config_filepath=None,
                    num_cores=1,
                    overwrite=False,
@@ -125,9 +126,13 @@ def align_stack_xy(output_path,
     step_name = 'align_xy'
     pbar = tqdm(stack.slices, position=2, desc=f'{stack.stack_name}: Processing', leave=False)
     for z in pbar:
-        if check_progress(db, stack.stack_name, step_name, z - z_offset) and not overwrite:
-            pbar.set_description(f'{stack.stack_name}: Skipping...')
+        if z in ignore_slices_global or z - z_offset in ignore_slices_local:
+            metadata = {
+                'slice_ignored': True
+                    }
+            log_progress(db, stack_name, step_name, z, z - z_offset, metadata)
             continue
+
         pbar.set_description(f'{stack.stack_name}: Loading tile_map...')
         tm = stack.get_tile_map(z, apply_gaussian, apply_clahe)
         tile_map = tm.tile_map

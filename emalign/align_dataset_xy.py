@@ -82,7 +82,7 @@ def align_dataset_xy(config_path,
                                                 position=1, 
                                                 desc='Processing stacks', 
                                                 leave=True):
-        tile_maps_paths, tile_maps_invert = parse_stack_info(stack_config_path)
+        tile_maps_paths, tile_maps_invert, ignore_slices = parse_stack_info(stack_config_path)
         wipe_this_stack = (stack_name == wipe_progress_stack)
         align_stack_xy(output_path=output_path,
                        stack_name=stack_name,
@@ -95,6 +95,7 @@ def align_dataset_xy(config_path,
                        apply_clahe=apply_clahe,
                        project_name=project_name,
                        io_mode=io_mode,
+                       ignore_slices=ignore_slices,
                        mongodb_config_filepath=mongodb_config_filepath,
                        num_cores=num_workers,
                        overwrite=overwrite,
