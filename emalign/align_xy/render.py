@@ -19,6 +19,7 @@ def render_slice_xy(destination,
                     dest_mask=None,
                     return_render=False,
                     resize_canvas=True,
+                    min_stitch_score=0,
                     **kwargs):
     '''Render an aligned image from a tile map.
 
@@ -73,10 +74,16 @@ def render_slice_xy(destination,
 
     if return_render:
         return stitched, stitch_score
-    else:
+    elif np.min(stitch_score) > min_stitch_score:
+        # Stitch good enough, write data
         destination, _ = write_data(destination, stitched, z)
 
         if dest_mask is not None:
             dest_mask, _ = write_data(dest_mask, mask, z)
+            return destination, dest_mask, stitch_score
+        return destination, stitch_score
+    else:
+        # Bad stitch, don't write data
+        if dest_mask is not None:
             return destination, dest_mask, stitch_score
         return destination, stitch_score
