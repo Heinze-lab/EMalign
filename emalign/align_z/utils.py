@@ -274,6 +274,11 @@ def determine_initial_offset(datasets, paths):
         datasets = {os.path.basename(os.path.abspath(d.kvstore.path)): d for d in datasets}
     
     global_offset = np.array([0,0])
+    pbar = tqdm(position=0,
+                desc='Computing global offset without reference',
+                dynamic_ncols=True,
+                leave=True,
+                total=sum([len(p) for p in paths]))
     for path in paths:
         path_offset = np.array([0,0])
 
@@ -288,5 +293,6 @@ def determine_initial_offset(datasets, paths):
             path_offset += prev_offset
         
         global_offset = np.min([global_offset, path_offset], axis=0)
+        pbar.update(1)
     
     return np.abs(global_offset)
