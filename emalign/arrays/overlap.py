@@ -217,3 +217,55 @@ def check_overlap(img1,
         lap_variance_diff = 0
 
     return lap_variance_diff
+
+
+def get_overlap_z(img, bbox, mask=None, compute_mask=False):
+
+    if np.any(np.array(bbox) < 0):
+        # Pad the image
+        pad_y = np.min(bbox[:2])
+        pad_x = np.min(bbox[2:])
+        pad = [[pad_y, 0], [pad_x, 0]]
+        img = np.pad(img, pad)
+        y1, y2, x1, x2 = np.array(bbox) - np.array(pad)
+    else:
+        y1, y2, x1, x2 = bbox
+
+    overlap_img = img[y1:y2, x1:x2]
+
+    if mask is None and compute_mask:
+        # Compute mask if necessary (from cropped to save time)
+        overlap_mask = compute_greyscale_mask(overlap_img)
+    else:
+        overlap_mask = mask[y1:y2, x1:x2]
+
+    return overlap_img, overlap_mask
+
+
+def get_overlap_ref(ref_img, 
+                    mov_img, 
+                    ref_mask=None, 
+                    mov_mask=None,
+                    bbox_ref=None,
+                    pad_overlap=100,
+                    return_sift=False):
+
+    if bbox_ref is None:
+        # Estimate transform between ref and mov to figure out where the overlap is
+        M, output_shape, ref_offset, valid_estimate, stats = estimate_transform_sift(ref_img, mov_img, 0.1, refine_estimate=True)
+        if not valid_estimate:
+            M, output_shape, ref_offset, valid_estimate, stats = estimate_transform_sift(ref_img, mov_img, 0.3, refine_estimate=True)
+
+        # Get the overlapping region in the reference image
+        if mov_mask is None:
+            mov_mask = compute_greyscale_mask(mov_img)
+
+        bbox_mask = np.array(mask_to_bbox(mov_mask))
+        bbox_ref = transform_bbox(bbox_mask, M, ref_offset, dilate=pad_overlap)
+    
+    overlap_ref, overlap_ref_mask = get_overlap_z(ref_img, bbox_ref, ref_mask, compute_mask=True)
+
+    if return_sift:
+        return overlap_ref, overlap_ref_mask, bbox_ref, (M, output_shape, ref_offset, valid_estimate, stats)
+    else:
+        return overlap_ref, overlap_ref_mask, bbox_ref
