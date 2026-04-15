@@ -102,6 +102,7 @@ def initialize_destination_stores(destination_path, align_plan, save_downsampled
     create_new = not os.path.exists(destination_path) or start_over
 
     if create_new:
+        z_off = 0 # TODO: deal with this
         logging.info(f'Creating project dataset at: \n    {destination_path}\n')
         if start_over:
             logging.info('Previous dataset will be overwritten')
@@ -113,6 +114,12 @@ def initialize_destination_stores(destination_path, align_plan, save_downsampled
         ds_bounds = align_plan['dataset_local_bounds']
         root_offset = np.array(align_plan['root_offset'])
         pad_offset = np.array(align_plan['pad_offset'])
+        bbox = align_plan['ref_global_bbox']
+        if bbox is not None:
+            y_off = bbox[0]
+            x_off = bbox[2]
+        else:
+            y_off = x_off = 0
 
         # Calculate total Z range
         max_z = 0
