@@ -306,6 +306,7 @@ def align_dataset_z(project_dir: str,
 
     # Execute alignment
     logging.info('Starting Z alignment...')
+    logging.info(f'Number of cores used for rendering: {num_workers}')
     execute_alignment(paths, dataset_configs, root_stack, num_workers, wipe_progress_stacks)
 
     logging.info('Done!')
@@ -335,7 +336,7 @@ if __name__ == '__main__':
                         dest='num_workers',
                         type=int,
                         default=NUM_WORKERS,
-                        help=f'Number of threads to use. Default: {NUM_WORKERS}')
+                        help=f'Number of threads to use for rendering. Default: {NUM_WORKERS}')
     parser.add_argument('-ds', '--downsample-scale',
                         metavar='SCALE',
                         dest='save_downsampled',
