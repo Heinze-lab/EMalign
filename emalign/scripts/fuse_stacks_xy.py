@@ -233,8 +233,8 @@ def fuse_stacks_group(config,
             
             if pbar_stacks.n == pbar_stacks.total-1:
                 pbar_stacks.set_description('Writing slice...')
-                destination, _ = write_slice(destination, canvas, z)
-                destination_mask, _ = write_slice(destination_mask, canvas_mask, z)
+                destination, _ = write_data(destination, canvas, z)
+                destination_mask, _ = write_data(destination_mask, canvas_mask, z)
 
         # Log progress
         metadata = {
