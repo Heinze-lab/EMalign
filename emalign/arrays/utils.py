@@ -1,8 +1,6 @@
 import cv2
 import numpy as np
 
-from emalign.io.process.mask import mask_to_bbox
-
 def resample(array, ratio):
     '''
     Resize an array by a scaling ratio using OpenCV interpolation.

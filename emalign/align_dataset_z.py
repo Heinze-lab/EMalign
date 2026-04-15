@@ -21,17 +21,16 @@ os.environ['OMP_NUM_THREADS'] = '4'
 os.environ['MKL_NUM_THREADS'] = '4'
 
 import argparse
-import json
 import logging
 import numpy as np
 import sys
 
 from inspect import signature
-from typing import List, Optional
+from typing import Optional
 
 from emalign.align_z.config import load_align_plan, load_dataset_configs, validate_config_directory
 from emalign.scripts.align_stack_z import align_stack_z
-from emalign.io.store import open_store
+from emalign.io.store import open_store, set_store_attributes, get_store_attributes
 from emalign.io.progress import get_mongo_client, get_mongo_db, wipe_progress
 
 

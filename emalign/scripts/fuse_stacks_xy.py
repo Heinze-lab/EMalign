@@ -4,7 +4,7 @@ import logging
 import os
 from emalign.align_xy.stitch_offgrid import stitch_images
 from emalign.io.progress import get_mongo_client, get_mongo_db, log_progress, check_progress, wipe_progress
-from emalign.io.store import write_slice, open_store
+from emalign.io.store import write_data, open_store
 import tensorstore as ts
 
 from glob import glob

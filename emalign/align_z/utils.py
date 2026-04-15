@@ -11,9 +11,9 @@ import pandas as pd
 
 from cv2 import warpAffine
 from glob import glob
+from tqdm import tqdm
 
-from emalign.io.store import get_store_attributes
-
+from ..io.store import get_store_attributes
 from ..arrays.sift import estimate_transform_sift
 
 

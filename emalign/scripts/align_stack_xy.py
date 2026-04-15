@@ -20,13 +20,13 @@ import argparse
 
 from tqdm import tqdm
 
-from emalign.align_xy.render import render_slice_xy
-from emalign.align_xy.stitch_ongrid import get_coarse_offset, get_elastic_mesh
-from emalign.arrays.stacks import Stack, parse_stack_info
-from emalign.arrays.tile_map import get_tile_map_margins
-from emalign.io.store import open_store, set_store_attributes
-from emalign.io.progress import get_mongo_client, get_mongo_db, log_progress, check_progress, wipe_progress
-from emalign.io.backend import get_io_backend
+from ..align_xy.render import render_slice_xy
+from ..align_xy.stitch_ongrid import get_coarse_offset, get_elastic_mesh
+from ..arrays.stacks import Stack, parse_stack_info
+from ..arrays.tile_map import get_tile_map_margins
+from ..io.store import open_store, set_store_attributes
+from ..io.progress import get_mongo_client, get_mongo_db, log_progress, check_progress, wipe_progress
+from ..io.backend import get_io_backend
 
 
 logging.basicConfig(level=logging.INFO)

@@ -1,6 +1,8 @@
 import numpy as np
 from scipy import ndimage
 
+from ...arrays.utils import resample
+
 def compute_range_mask(data, filter_size, range_limit):
 
     '''
