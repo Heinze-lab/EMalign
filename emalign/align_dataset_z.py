@@ -200,7 +200,7 @@ def initialize_destination_stores(destination_path, align_plan, save_downsampled
     return destination, destination_mask, ds_destination, ds_project_output_path
 
 
-def execute_alignment(paths, dataset_configs, root_stack, num_workers, wipe_progress_stack):
+def execute_alignment(paths, dataset_configs, root_stack, num_workers, wipe_progress_stacks):
     '''Execute the alignment for all datasets.
 
     Args:
@@ -208,7 +208,7 @@ def execute_alignment(paths, dataset_configs, root_stack, num_workers, wipe_prog
         dataset_configs: Dictionary of dataset_name -> config
         root_stack: Name of the root stack
         num_workers: Number of worker threads
-        wipe_progress_stack: Optional stack name to wipe progress for
+        wipe_progress_stacks: Optional stack name to wipe progress for
     '''
     for i, path in enumerate(paths):
         for dataset_name in path:
@@ -222,7 +222,7 @@ def execute_alignment(paths, dataset_configs, root_stack, num_workers, wipe_prog
                     f'First dataset ({dataset_name}) of the path is not the root stack ({root_stack})'
 
             config['num_workers'] = num_workers
-            config['wipe_progress_flag'] = (dataset_name == wipe_progress_stack)
+            config['wipe_progress_flag'] = any([dataset_name == s for s in wipe_progress_stacks])
 
             # Start alignment
             try:
@@ -244,7 +244,7 @@ def align_dataset_z(project_dir: str,
                     num_workers: int = NUM_WORKERS,
                     save_downsampled: float = DOWNSAMPLE_SCALE,
                     start_over: bool = False,
-                    wipe_progress_stack: Optional[str] = None) -> None:
+                    wipe_progress_stacks: Optional[list[str]] = None) -> None:
     '''Execute Z alignment using pre-generated configuration files.
 
     Args:
@@ -252,7 +252,7 @@ def align_dataset_z(project_dir: str,
         num_workers: Number of worker threads
         save_downsampled: Downsampling factor for inspection store
         start_over: Wipe all progress and restart
-        wipe_progress_stack: Specific stack to wipe progress for
+        wipe_progress_stacks: List of specific stacks to wipe progress for
     '''
     config_dir = os.path.join(project_dir, 'config/z_config')
     if not os.path.exists(config_dir) or not os.listdir(config_dir):
@@ -286,13 +286,18 @@ def align_dataset_z(project_dir: str,
         # Wipe progress for all datasets
         first_config = next(iter(dataset_configs.values()))
         mongodb_config_filepath = first_config.get('mongodb_config_filepath')
-
-        if mongodb_config_filepath:
-            client = get_mongo_client(mongodb_config_filepath)
-            db = get_mongo_db(client, project_name)
-            for dataset_name in dataset_configs:
-                wipe_progress(db, dataset_name)
-                logging.info(f'Wiped progress for {dataset_name}')
+    
+        client = get_mongo_client(mongodb_config_filepath)
+        db = get_mongo_db(client, project_name)
+        wipe_progress_stacks = []
+        steps = ['flow_z', 'mesh_relax_z', 'render_z']
+        for dataset_name in dataset_configs:
+            for step in steps:
+                wipe_progress(db, dataset_name, step_name=step) # database progress
+            attrs = get_store_attributes(dataset_configs[dataset_name]['dataset_path'])
+            attrs['z_aligned'] = False # attribute flag when data has been processed
+            set_store_attributes(dataset_configs[dataset_name]['dataset_path'], attrs)
+            logging.info(f'Wiped progress for {dataset_name}')
 
     # Initialize destination stores
     destination, destination_mask, ds_destination, ds_project_output_path = \
@@ -302,7 +307,7 @@ def align_dataset_z(project_dir: str,
 
     # Execute alignment
     logging.info('Starting Z alignment...')
-    execute_alignment(paths, dataset_configs, root_stack, num_workers, wipe_progress_stack)
+    execute_alignment(paths, dataset_configs, root_stack, num_workers, wipe_progress_stacks)
 
     logging.info('Done!')
     logging.info(f'Output: {destination_path}')
@@ -344,10 +349,11 @@ if __name__ == '__main__':
                         action='store_true',
                         help='Wipe all progress and restart')
     parser.add_argument('--wipe-progress',
-                        dest='wipe_progress_stack',
+                        dest='wipe_progress_stacks',
                         type=str,
-                        default=None,
-                        help='Wipe progress for a specific stack before starting')
+                        nargs='+',
+                        default=[''],
+                        help='Wipe progress for one or more specific stack(s) before starting')
 
     args = parser.parse_args()
 
@@ -365,5 +371,5 @@ if __name__ == '__main__':
         num_workers=args.num_workers,
         save_downsampled=args.save_downsampled,
         start_over=args.start_over,
-        wipe_progress_stack=args.wipe_progress_stack
+        wipe_progress_stacks=args.wipe_progress_stacks
     )
