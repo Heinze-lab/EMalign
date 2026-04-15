@@ -118,8 +118,9 @@ def prep_align_stacks(main_dir,
                         'z_end': stack.slices[-1],
                         'tile_maps': json_tile_maps,
                         'tile_maps_invert': {str(k):v for k,v in stack.tile_maps_invert.items()},
-                        'ignore_slices_local': [], # placeholder for users to add slices that they want ignored
-                        'ignore_slices_global': [] # placeholder for users to add slices that they want ignored
+                        # placeholders for users to add slices that they want ignored
+                        'ignore_slices_local': [], # local indices (starting at 0)
+                        'ignore_slices_global': [] # global indices (starting at z_start for that dataset)
                         }
         config_path = os.path.join(config_dir, 'xy_' + stack.stack_name + '.json')
         config_paths.update({stack.stack_name: os.path.abspath(config_path)})      
@@ -137,8 +138,9 @@ def prep_align_stacks(main_dir,
                         'z_end': stack.slices[-1],
                         'tile_maps': json_tile_maps,
                         'tile_maps_invert': {str(k):v for k,v in stack.tile_maps_invert.items()},
-                        'ignore_slices_local': [], # placeholder for users to add slices that they want ignored
-                        'ignore_slices_global': [] # placeholder for users to add slices that they want ignored
+                        # placeholders for users to add slices that they want ignored
+                        'ignore_slices_local': [], # local indices (starting at 0)
+                        'ignore_slices_global': [] # global indices (starting at z_start for that dataset)
                         }
         config_path = os.path.join(config_dir, 'xy_' + stack.stack_name + '.json')
         config_paths.update({stack.stack_name: os.path.abspath(config_path)})
