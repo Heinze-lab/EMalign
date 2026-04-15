@@ -71,7 +71,7 @@ def get_tileset_resolution(tileset_path):
     return (tileset_path, resolution)
 
 
-def get_tilesets(main_dir, resolution, dir_pattern, num_workers):
+def get_tilesets(main_dir, resolution, dir_patterns, num_workers):
     '''
     Find all tileset directories matching a given resolution and naming pattern.
 
@@ -81,7 +81,7 @@ def get_tilesets(main_dir, resolution, dir_pattern, num_workers):
     Args:
         main_dir: Parent directory containing tileset subdirectories.
         resolution: Target resolution as (y_res, x_res) tuple (e.g., (10, 10)).
-        dir_pattern: List of substrings that must appear in directory names
+        dir_patterns: List of substrings that must appear in directory names
             to be included (e.g., ['Sample1', 'ROI']).
         num_workers: Number of parallel threads for scanning directories.
 
@@ -110,7 +110,7 @@ def get_tilesets(main_dir, resolution, dir_pattern, num_workers):
             if result is None:
                 continue
             # Find the directory with the right pattern if relevant
-            for d in dir_pattern:
+            for d in dir_patterns:
                 if d in result[0].split('/')[-2] and result[1] == tuple(resolution):
                     stack_list.append(result[0])
     return sorted(stack_list)
