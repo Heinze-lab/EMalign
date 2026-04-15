@@ -359,7 +359,7 @@ if __name__ == '__main__':
                         dest='config_z_path',
                         required=True,
                         type=str,
-                        help='Path to Z alignment parameters config')
+                        help='Path to Z alignment parameters config.')
 
     # Optional arguments
     parser.add_argument('-cfg', '--config',
@@ -368,20 +368,20 @@ if __name__ == '__main__':
                         nargs='+',
                         type=str,
                         default=None,
-                        help='Path(s) to XY main config file(s)')
+                        help='Path(s) to XY main config file(s). Default: main config is assumed to exist at "project_dir/config/xy_config/main_config.json"')
     parser.add_argument('-d', '--destination',
                         metavar='DESTINATION',
                         dest='destination_path',
                         type=str,
                         default=None,
-                        help='Path to output zarr (default: derived from XY config)')
+                        help='Path to output zarr. Default: derived from XY config')
     parser.add_argument('-r', '--reference',
                         metavar='REFERENCE_PATH',
                         dest='reference_path',
                         type=str,
                         default=None,
-                        help='Path to an existing zarr to use as reference for alignment. '
-                             'Each dataset will be aligned to this reference instead of to each other.')
+                        help='Path to an existing zarr to use as reference for alignment.'
+                             'Each dataset will be aligned to this reference instead of to each other. Default: No reference, use previous slice of same dataset')
     parser.add_argument('--reference-offset',
                         metavar='REFERENCE_OFFSET',
                         dest='reference_offset',
@@ -394,7 +394,7 @@ if __name__ == '__main__':
                         type=str,
                         nargs='+',
                         default=[],
-                        help='Patterns to exclude from datasets')
+                        help='Patterns to exclude from datasets. Default: all datasets are processed')
     parser.add_argument('-c', '--cores',
                         metavar='CORES',
                         dest='num_workers',
@@ -411,7 +411,7 @@ if __name__ == '__main__':
                         dest='force_overwrite',
                         action='store_true',
                         default=False,
-                        help='Force overwrite of existing config files')
+                        help='Force overwrite of existing config files. Default: user is prompted if configs exist')
 
     args = parser.parse_args()
 
