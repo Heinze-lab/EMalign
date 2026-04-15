@@ -42,6 +42,30 @@ def resample(array, ratio):
         array = cv2.resize(array, None, fx=ratio, fy=ratio)
     return array
 
+
+def transform_bbox(bbox, M, offset=[0,0], dilate=0): 
+    y1,y2,x1,x2 = bbox
+    corners = np.array([
+        [x1, y1],  # top-left
+        [x2, y1],  # top-right
+        [x2, y2],  # bottom-right
+        [x1, y2]   # bottom-left
+    ])
+
+    # cv2.transform expects shape (N, 1, 2)
+    corners_reshaped = corners.reshape(-1, 1, 2)
+    transformed_corners = cv2.transform(corners_reshaped, M)
+    transformed_corners = transformed_corners.reshape(-1, 2)
+    transformed_corners += np.array(offset).astype(int)
+
+    # Return bbox and dilate if necessary
+    x1 = max(0, int(np.floor(transformed_corners[:, 0].min())) - dilate)
+    y1 = max(0, int(np.floor(transformed_corners[:, 1].min())) - dilate)
+    x2 = max(0, int(np.ceil(transformed_corners[:, 0].max())) + dilate)
+    y2 = max(0, int(np.ceil(transformed_corners[:, 1].max())) + dilate)
+    return y1, y2, x1, x2
+
+
 # PAD
 def xy_offset_to_pad(offset):
     '''
