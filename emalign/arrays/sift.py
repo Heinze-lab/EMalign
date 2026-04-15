@@ -215,8 +215,8 @@ def estimate_transform_sift(ref_img,
     ds_ref_img = resample(ref_img, scale)
     ds_mov_img = resample(mov_img, scale)
 
-    ds_ref_mask = resample(ref_mask, scale) if ref_mask is not None else None
-    ds_mov_mask = resample(mov_mask, scale) if mov_mask is not None else None
+    ds_ref_mask = resample(ref_mask.astype(np.uint8), scale) if ref_mask is not None else None # cv2 does not want bool
+    ds_mov_mask = resample(mov_mask.astype(np.uint8), scale) if mov_mask is not None else None
 
     # Find keypoints using SIFT
     sift = cv2.SIFT_create(nfeatures=max_features)
