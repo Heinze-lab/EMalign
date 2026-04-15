@@ -40,6 +40,9 @@ def align_stack_z(destination_path,
                   warp_config,
                   first_slice,
                   yx_target_resolution,
+                  reference_path=None,
+                  reference_offset=0,
+                  bbox_ref = None,
                   mesh_config={},
                   project_name='OV',
                   mongodb_config_filepath=None,
@@ -108,7 +111,7 @@ def align_stack_z(destination_path,
 
     # Check whether stack was processed
     attrs = get_store_attributes(dataset)
-    if attrs.get('z_aligned', False) == True and not overwrite:
+    if attrs.get('z_aligned', False) is True and not wipe_progress_flag:
         logging.info(f'Dataset {dataset_name} was already processed and will be skipped.')
         return False
     
@@ -127,7 +130,6 @@ def align_stack_z(destination_path,
     else:
         target_scale = res/yx_target_resolution
         assert target_scale >= 1, f'Target resolution ({yx_target_resolution}) must be lower than or equal to current dataset resolution ({res}) to avoid data loss.'
-    logging.info(f'Target scale ({dataset_name}): {target_scale}')
     
     #---------- Open destination(s) ----------#
     destination = open_store(destination_path, mode='r+', dtype=ts.uint8)
@@ -138,18 +140,22 @@ def align_stack_z(destination_path,
         ds_output_path, project_name_from_path = destination_path.rsplit('/', maxsplit=1)
         ds_output_path = os.path.join(ds_output_path, f'{save_downsampled}x_' + project_name_from_path)
         ds_destination = open_store(ds_output_path, mode='r+', dtype=ts.uint8)
-                
-    #---------- Compute flow ----------#
-    if first_slice is not None:
-        first_slice, z = find_ref_slice(destination, 
-                                        int(first_slice), 
-                                        reverse=True)
-        first_slice_mask = destination_mask[z].read().result()
-    elif dataset.shape[0] > 1:
-        # More than one image
-        first_slice_mask = None
+
+    #---------- Open reference stack if relevant ----------#
+    if reference_path is not None:
+        reference = open_store(reference_path, mode='r', dtype=ts.uint8)
+        ref_res = get_store_attributes(reference)['resolution']
+        ref_scale = ref_res[-1] / yx_target_resolution
     else:
-        # No need to compute flow because we only have one image and it is the first one
+        # No reference is provided, we will use the destination and the dataset itself
+        reference = None
+        ref_scale = 1
+                
+    logging.info(f'Target scale ({dataset_name}): {target_scale} (ref_scale: {ref_scale})')
+
+    #---------- First slice ----------#
+    if first_slice is None and reference_path == destination_path and dataset.shape[0] == 1:
+        # Very first image, no reference, only one image -> no flow computed, early exit
         data = dataset[dataset.domain.inclusive_min[0]].read().result() # First slice within bounds
         data = resample(data, target_scale)
         
@@ -186,22 +192,36 @@ def align_stack_z(destination_path,
         attrs['z_aligned'] = True
         set_store_attributes(dataset, attrs)
         return True
+
+    if first_slice is not None:
+        # Only the case if there is no reference
+        ref_slice, z = find_ref_slice(destination, 
+                                        int(first_slice), 
+                                        reverse=True)
+        ref_slice_mask = destination_mask[z].read().result()
+    else:
+        ref_slice, ref_slice_mask = None, None
         
     # Compute flow and save to file
-    flow, transform = compute_flow_dataset(dataset=dataset,
-                                           original_shape=original_shape, 
-                                           ignore_slices=ignore_slices_flow,
-                                           scale=scale, 
-                                           patch_size=patch_size, 
-                                           stride=stride, 
-                                           max_deviation=max_deviation,
-                                           max_magnitude=max_magnitude,
-                                           db=db,
-                                           destination_path=os.path.dirname(os.path.abspath(destination_path)),
-                                           ref_slice=first_slice,
-                                           ref_slice_mask=first_slice_mask,
-                                           target_scale=target_scale,
-                                           z_offset=z_offset)
+    flow, transform, bbox_ref = compute_flow_dataset(dataset=dataset,
+                                                     original_shape=original_shape, 
+                                                     ignore_slices=ignore_slices_flow,
+                                                     scale=scale, 
+                                                     patch_size=patch_size, 
+                                                     stride=stride, 
+                                                     max_deviation=max_deviation,
+                                                     max_magnitude=max_magnitude,
+                                                     db=db,
+                                                     destination_path=os.path.dirname(os.path.abspath(destination_path)),
+                                                     dataset_mask=dataset_mask,
+                                                     reference_dataset=reference,
+                                                     reference_offset=reference_offset,
+                                                     bbox_ref=bbox_ref,
+                                                     ref_slice=ref_slice,
+                                                     ref_slice_mask=ref_slice_mask,
+                                                     target_scale=target_scale,
+                                                     ref_scale=ref_scale,
+                                                     z_offset=z_offset)
 
     #---------- Compute mesh ----------#
     out_path_meshes = os.path.join(os.path.dirname(destination_path), 
@@ -210,14 +230,15 @@ def align_stack_z(destination_path,
     os.makedirs(out_path_meshes, exist_ok=True)
     inv_map_path = os.path.join(out_path_meshes, dataset_name)
     mesh_config = mesh.IntegrationConfig(**mesh_config_args)
-
-    if not os.path.exists(inv_map_path):
-        inv_map, _ = get_inv_map(flow, stride, dataset_name, mesh_config)
-
-        # Create and write inv_map tensorstore
+    step_name = 'mesh_relax_z'
+    if not check_progress(db, dataset_name, step_name, None):
+        # Create store
+        inv_map, _ = get_inv_map(flow, stride, dataset_name, mesh_config, 
+                                 relax_xy=reference_path is not None # If reference is provided, relax meshes within slice
+                                 )        
         inv_map_store = open_store(
             inv_map_path,
-            mode='a',
+            mode='w', # if one exists it will be overwritten. We assume no progress == discard existing store
             dtype=ts.float64,
             shape=list(inv_map.shape),  # [2, z, y, x]
             chunks=[2, 1, min(512, inv_map.shape[2]), min(512, inv_map.shape[3])],
@@ -225,29 +246,38 @@ def align_stack_z(destination_path,
         )
         inv_map_store[:].write(inv_map).result()
 
-        # Save mesh integration config as attributes
-        set_store_attributes(inv_map_store, {
+        # Save mesh integration config as attributes and mongodb doc
+        metadata = {
             'mesh_config': mesh_config_args,
             'stride': stride,
+            'bbox_ref': bbox_ref
+        }
+        set_store_attributes(inv_map_store, 
+                             metadata | {
             'dataset_name': dataset_name,
             'description': 'Inverse displacement map from mesh relaxation'
         })
+        log_progress(db, dataset_name, step_name, None, None, metadata)
     else:
-        # Load from existing tensorstore, but first validate parameters
+        # Load from existing tensorstore, but first validate parameters with stored attributes
+        # Old progress doc may still exist
         inv_map_store = open_store(inv_map_path, mode='r')
         stored_attrs = get_store_attributes(inv_map_store)
 
         # Check if mesh_config and stride match current settings
         params_match = stored_attrs.get('mesh_config') == mesh_config_args
 
-        if not params_match and overwrite:
-            logging.warning(f'Stored mesh parameters do not match current settings. Recomputing inverse map.')
-            logging.info(f'Stored mesh_config: {stored_attrs.get("mesh_config")}')
-            logging.info(f'Current mesh_config: {mesh_config_args}')
-            logging.info(f'Stored stride: {stored_attrs.get("stride")}, Current stride: {stride}')
+        if wipe_progress_flag or not params_match:
+            if not params_match:
+                logging.warning(f'Stored mesh parameters do not match current settings. Recomputing inverse map.')
+                logging.info(f'Stored mesh_config: {stored_attrs.get("mesh_config")}')
+                logging.info(f'Current mesh_config: {mesh_config_args}')
+                logging.info(f'Stored stride: {stored_attrs.get("stride")}, Current stride: {stride}')
 
             # Recompute with current parameters
-            inv_map, _ = get_inv_map(flow, stride, dataset_name, mesh_config)
+            inv_map, _ = get_inv_map(flow, stride, dataset_name, mesh_config, 
+                                     relax_xy=reference_path is not None # If reference is provided, relax meshes within slice
+                                     )
 
             # Overwrite existing store
             inv_map_store = open_store(
@@ -261,22 +291,27 @@ def align_stack_z(destination_path,
             inv_map_store[:].write(inv_map).result()
 
             # Update attributes with current settings
-            set_store_attributes(inv_map_store, {
+            metadata = {
                 'mesh_config': mesh_config_args,
                 'stride': stride,
+                'bbox_ref': bbox_ref
+            }
+            set_store_attributes(inv_map_store, 
+                                metadata | {
                 'dataset_name': dataset_name,
                 'description': 'Inverse displacement map from mesh relaxation'
             })
+            log_progress(db, dataset_name, step_name, None, None, metadata)
         elif params_match:
             logging.info('Loading existing mesh')
             # Parameters match, safe to use cached inverse map
             inv_map = inv_map_store[:].read().result()
         else:
-            raise RuntimeError('Stored mesh parameters do not match current settings but overwrite is set to False.')
+            raise RuntimeError('Stored mesh parameters do not match current settings but wipe_progress_flag is set to False.')
 
     #---------- Render data ----------#
     # Get first slice
-    if first_slice is None:
+    if first_slice is None and reference is None:
         # First slice to write is the first slice of the dataset, untouched but padded
         # Then we warp the rest from the next slice
         first, z = find_ref_slice(dataset, 
@@ -315,7 +350,7 @@ def align_stack_z(destination_path,
         
         start = z + 1
     else:
-        # All slices have to be warped to match the last slice of the previous stack
+        # All slices have to be warped: either to match the last slice of the previous stack or to align with external reference
         start = dataset.domain.inclusive_min[0]
 
     # Start alignment
