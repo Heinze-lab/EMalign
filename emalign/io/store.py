@@ -153,11 +153,11 @@ def open_store(
         return ts.open(spec, **kwargs).result()
     
 
-def set_store_attributes(store: ts.TensorStore, attrs: dict) -> bool:
+def set_store_attributes(store: ts.TensorStore | str, attrs: dict) -> bool:
     '''Set attributes for a Zarr store.
 
     Args:
-        store (tensorstore.TensorStore): The store to set attributes for.
+        store (tensorstore.TensorStore | str): The store or its kvstore path.
         attrs (dict): Dictionary of attributes to store.
 
     Returns:
@@ -166,17 +166,18 @@ def set_store_attributes(store: ts.TensorStore, attrs: dict) -> bool:
     Raises:
         IOError: If the .zattrs file cannot be written.
     '''
-    attrs_path = os.path.join(store.kvstore.path, '.zattrs')
+    path = store if isinstance(store, str) else store.kvstore.path
+    attrs_path = os.path.join(path, '.zattrs')
     with open(attrs_path, 'w') as f:
         json.dump(attrs, f, indent=2)
     return True
 
 
-def get_store_attributes(store: ts.TensorStore) -> dict:
+def get_store_attributes(store: ts.TensorStore | str) -> dict:
     '''Get attributes from a Zarr store.
 
     Args:
-        store (tensorstore.TensorStore): The store to read attributes from.
+        store (tensorstore.TensorStore | str): The store or its kvstore path.
 
     Returns:
         dict: Dictionary of stored attributes.
@@ -185,7 +186,8 @@ def get_store_attributes(store: ts.TensorStore) -> dict:
         IOError: If the .zattrs file cannot be read.
         json.JSONDecodeError: If the .zattrs file contains invalid JSON.
     '''
-    attrs_path = os.path.join(store.kvstore.path, '.zattrs')
+    path = store if isinstance(store, str) else store.kvstore.path
+    attrs_path = os.path.join(path, '.zattrs')
     with open(attrs_path, 'r') as f:
         attrs = json.load(f)
     return attrs
