@@ -15,34 +15,33 @@ def compute_range_mask(data, filter_size, range_limit):
     return mask
 
 
-def compute_greyscale_mask(data, background_value=0):
+def compute_greyscale_mask(data, background_value=0, downsample_factor=10):
+    ratio = 1 / downsample_factor
 
-    '''
-    Compute a mask of the region that contains greyscale data.
-    '''
-   
-    mask = data>background_value
+    # Downsample greyscale, then threshold
+    small = resample(data, ratio)
+    mask_small = small > background_value
+    del small
 
-    structure = ndimage.generate_binary_structure(data.ndim, 1)
-    labels, num_labels = ndimage.label(mask, structure=structure)
+    structure = ndimage.generate_binary_structure(2, 1)
+    labels, num_labels = ndimage.label(mask_small, structure=structure)
 
-    if num_labels != 0:
-        component_sizes = np.bincount(labels.ravel())[1:]
-        largest_component = np.argmax(component_sizes) + 1
+    if num_labels == 0:
+        return np.zeros(data.shape, dtype=bool)
 
-        mask = labels == largest_component
+    component_sizes = np.bincount(labels.ravel())[1:]
+    largest_component = np.argmax(component_sizes) + 1
+    mask_small = labels == largest_component
+    del labels
 
-        # Fill holes
-        mask = ndimage.binary_fill_holes(mask)
+    mask_small = ndimage.binary_fill_holes(mask_small)
+    struct_elem = ndimage.generate_binary_structure(2, 1)
+    struct_elem = ndimage.iterate_structure(struct_elem, 2)
+    mask_small = ndimage.binary_opening(mask_small, structure=struct_elem)
+    mask_small = ndimage.binary_closing(mask_small, structure=struct_elem)
 
-        # Close smaller holes
-        struct_elem = ndimage.generate_binary_structure(data.ndim, 1)
-        struct_elem = ndimage.iterate_structure(struct_elem, 2)
-        mask = ndimage.binary_opening(mask, structure=struct_elem)
-        mask = ndimage.binary_closing(mask, structure=struct_elem)
-
-    return mask
-
+    # Upsample back — nearest-neighbour preserves hard edges cleanly
+    return resample(mask_small, downsample_factor)
 
 def mask_to_bbox(mask):
     y = np.any(mask, axis=1)
