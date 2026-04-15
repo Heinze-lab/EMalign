@@ -154,7 +154,7 @@ def align_stack_z(destination_path,
     logging.info(f'Target scale ({dataset_name}): {target_scale} (ref_scale: {ref_scale})')
 
     #---------- First slice ----------#
-    if first_slice is None and reference_path == destination_path and dataset.shape[0] == 1:
+    if first_slice is None and reference is None and dataset.shape[0] == 1:
         # Very first image, no reference, only one image -> no flow computed, early exit
         data = dataset[dataset.domain.inclusive_min[0]].read().result() # First slice within bounds
         data = resample(data, target_scale)
