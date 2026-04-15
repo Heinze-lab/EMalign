@@ -248,7 +248,7 @@ if __name__ == '__main__':
                         metavar='PORT',
                         dest='port',
                         type=int,
-                        default=33333,
+                        default=55555,
                         help='Port used by neuroglancer')
     parser.add_argument('--prev-cfg',
                         metavar='PREV_CFG',
