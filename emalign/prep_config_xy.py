@@ -58,7 +58,10 @@ def prep_align_stacks(main_dir,
             logging.info('Overwriting existing config')
 
     # Create output path
-    output_name = output_name if output_name.endswith('.zarr') else output_name.rstrip('. ') + '.zarr'
+    if output_name is None:
+        # Use same name as project_dir
+        output_name = os.path.basename(project_dir)
+    output_zarr = output_name if output_name.endswith('.zarr') else output_name.rstrip('. ') + '.zarr'
     output_path = os.path.join(project_dir, output_name)
 
     # Determine the offset from a previous dataset that this one relates to
