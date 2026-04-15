@@ -165,34 +165,36 @@ if __name__ == '__main__':
 
     parser=argparse.ArgumentParser('Script aligning tiles in XY based on SOFIMA (Scalable Optical Flow-based Image Montaging and Alignment). \n\
                                     This script was written to match the file structure produced by the ThermoFisher MAPs software.')
-    parser.add_argument('-i', '--input_dir',
-                        metavar='MAIN_DIR',
-                        dest='main_dir',
-                        required=True,
-                        type=str,
-                        help='Path to the directory containing tilesets. \n \
-                              This directory contains subdirectories themselves containing the tiles to align. \n \
-                              Subdirectories are expected to contain tif and info files.')
-    parser.add_argument('-o', '--output_zarr',
-                        metavar='OUT_ZARR',
-                        dest='output_name',
-                        required=True,
-                        type=str,
-                        help='Name for the zarr container that will contain stitched files. Will be written in project_dir.')
+    
+    # Required arguments
     parser.add_argument('-p', '--project-dir',
                         metavar='PROJECT_DIR',
                         dest='project_dir',
                         required=True,
                         type=str,
                         help='Directory where the config will be written.')
+    parser.add_argument('-i', '--input_dir',
+                        metavar='MAIN_DIR',
+                        dest='main_dir',
+                        required=True,
+                        type=str,
+                        help='Path to the directory containing image data. Directory structure should match that required by the --mode flag.')
     parser.add_argument('-r', '--resolution',
                         metavar='RESOLUTION',
                         dest='resolution',
                         required=True,
                         type=int,
-                        nargs=2,
+                        nargs='+',
                         default=None,
                         help='XY resolution to align. Will look into the info file of each directory to find the tileset with the wanted resolution.')
+    
+    # Optional arguments
+    parser.add_argument('-o', '--output_name',
+                        metavar='OUT_NAME',
+                        dest='output_name',
+                        required=True,
+                        type=str,
+                        help='Name for the zarr container that will contain stitched files. Will be written in project_dir. Default: same as project_dir name')
     parser.add_argument('--offset',
                         metavar='OFFSET',
                         dest='offset',
@@ -201,18 +203,12 @@ if __name__ == '__main__':
                         nargs=3,
                         default=[0,0,0],
                         help='ZYX pixel offset for the final volume. Default: [0,0,0]')
-    parser.add_argument('--overlap',
-                        metavar='OVERLAP',
-                        dest='overlap',
-                        type=int,
-                        default=500,
-                        help='Size of the overlapping region in pixels, or in size ratio. Default: 500')
     parser.add_argument('-c', '--cores',
                         metavar='CORES',
                         dest='num_workers',
                         type=int,
-                        default=None,
-                        help='Number of cores to use for multiprocessing and multithreading. Default: 0 (all cores available)')
+                        default=NUM_WORKERS,
+                        help=f'Number of cores to use for loading test images. Default: {NUM_WORKERS}')
     parser.add_argument('--stride',
                         metavar='STRIDE',
                         dest='stride',
@@ -240,10 +236,10 @@ if __name__ == '__main__':
     parser.add_argument('--dir-pattern',
                         metavar='DIR_PATTERN',
                         dest='dir_pattern',
-                        nargs=1,
+                        nargs='+',
                         default=[''],
                         type=str,
-                        help='Pattern to match for subdirectories to process. Default to no pattern')
+                        help='Pattern(s) to match for subdirectories to process. Default: no pattern, all subdirectories are processed')
     parser.add_argument('--port',
                         metavar='PORT',
                         dest='port',
@@ -261,12 +257,12 @@ if __name__ == '__main__':
                         dest='project_name',
                         default=None,
                         type=str,
-                        help='Project name. If not provided, will prompt interactively.')
+                        help='Project name. Default: user is prompted for a name')
     parser.add_argument('--force-overwrite',
                         dest='force_overwrite',
                         action='store_true',
                         default=False,
-                        help='Force overwrite of existing config files without prompting.')
+                        help='Force overwrite of existing config files. Default: user is prompted if configs exist')
     parser.add_argument('--mode',
                         metavar='MODE',
                         dest='io_mode',

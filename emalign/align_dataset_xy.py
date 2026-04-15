@@ -108,23 +108,28 @@ if __name__ == '__main__':
 
     parser=argparse.ArgumentParser('Script aligning tiles in XY based on SOFIMA (Scalable Optical Flow-based Image Montaging and Alignment). \n\
                                     This script was written to match the file structure produced by the ThermoFisher MAPs software.')
+    
+    # Required arguments
     parser.add_argument('-cfg', '--config',
                         metavar='CONFIG_PATH',
                         dest='config_path',
                         required=True,
                         type=str,
                         help='Path to the main task config.')
+    
+    # Optional arguments
     parser.add_argument('-c', '--cores',
                         metavar='CORES',
                         dest='num_workers',
                         type=int,
-                        default=1,
-                        help='Number of threads to use for processing. Default: 1')
+                        default=NUM_WORKERS,
+                        help=f'Number of threads to use. Default: {NUM_WORKERS}')
     parser.add_argument('--overwrite', action='store_true', help='Overwrite existing dataset.')
     parser.add_argument('--wipe-progress',
-                        dest='wipe_progress_stack',
+                        dest='wipe_progress_stacks',
                         type=str,
-                        default=None,
+                        nargs='+',
+                        default=[''],
                         help='Wipe progress for a specific stack before starting.')
     args=parser.parse_args()
 
