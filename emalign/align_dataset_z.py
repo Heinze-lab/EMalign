@@ -43,6 +43,7 @@ logging.getLogger('jax._src.xla_bridge').setLevel(logging.WARNING)
 CHUNK_SIZE = [1, 1024, 1024]  # For store creation
 NUM_WORKERS = 1
 DOWNSAMPLE_SCALE = 10  # For creation of the downsampled inspection store
+Z_RESOLUTION = 50 # nm
 
 
 def load_and_validate_configs(config_dir):
@@ -145,6 +146,41 @@ def initialize_destination_stores(destination_path, align_plan, save_downsampled
             ds_project_output_path, mode=open_mode, dtype=ts.uint8,
             shape=dest_shape_ds, chunks=CHUNK_SIZE
         )
+
+        # Set some attributes that may be used by downstream pipelines
+        # resolution and voxel_size are the same, just there for compatibility
+        # with different versions of daisy or funlib.persistence
+        attrs = {
+                "voxel_offset": [z_off, y_off, x_off],
+                "offset": [z_off, y_off, x_off],
+                "resolution": [
+                    Z_RESOLUTION,
+                    align_plan['yx_target_resolution'],
+                    align_plan['yx_target_resolution']
+                ],
+                "voxel_size": [
+                    Z_RESOLUTION,
+                    align_plan['yx_target_resolution'],
+                    align_plan['yx_target_resolution']
+                ]
+                }
+        set_store_attributes(destination, attrs)
+        
+        attrs = {
+                "voxel_offset": [z_off, y_off//save_downsampled, x_off//save_downsampled],
+                "offset": [z_off, y_off//save_downsampled, x_off//save_downsampled],
+                "resolution": [
+                    Z_RESOLUTION,
+                    align_plan['yx_target_resolution']*save_downsampled,
+                    align_plan['yx_target_resolution']*save_downsampled
+                ],
+                "voxel_size": [
+                    Z_RESOLUTION,
+                    align_plan['yx_target_resolution']*save_downsampled,
+                    align_plan['yx_target_resolution']*save_downsampled
+                ]
+                }
+        set_store_attributes(ds_destination, attrs)
     else:
         logging.info(f'Opening existing project dataset at: \n    {destination_path}\n')
         import tensorstore as ts
