@@ -471,7 +471,7 @@ def align_stack_z(destination_path,
         log_progress(db, dataset_name, step_name, global_z, z, metadata)
     logging.info(f'{dataset_name}: Done.')
     logging.info(f'{dataset_name}: Empty slices: {empty}')
-    logging.info(f'{dataset_name}: Skipped already processed slices: {skipped}')
+    logging.info(f'{dataset_name}: Skipped already processed slices: {skipped}\n')
 
     # Add an attribute to keep track of what datasets have been aligned already
     attrs['z_aligned'] = True 
