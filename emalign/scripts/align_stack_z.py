@@ -400,7 +400,7 @@ def align_stack_z(destination_path,
         
         # Write data
         offset = np.abs(xy_offset) + np.array([x1, y1])
-
+        
         # To full resolution destination
         write_data(destination,
                    aligned[y1:y2, x1:x2], # Only write in the bounding box where the data is
@@ -410,20 +410,20 @@ def align_stack_z(destination_path,
                    resolve = True)
         # To destination mask
         write_data(destination_mask,
-                   aligned_mask[y1:y2, x1:x2], # Only write in the bounding box where the data is
-                   global_z, # z_offset relates to original minimum
-                   offset, # Only write in the bounding box where the data is
-                   preserve_mask = write_mask, # Mask where to write the data
+                   aligned_mask[y1:y2, x1:x2], 
+                   global_z, 
+                   offset, 
+                   preserve_mask = write_mask, 
                    resolve = True)
         # To downsampled destination
         if save_downsampled != 1:
             write_data(ds_destination,
-                       aligned[y1:y2, x1:x2], # Only write in the bounding box where the data is
-                       global_z, # z_offset relates to original minimum
-                   offset, # Only write in the bounding box where the data is
-                   preserve_mask = write_mask, # Mask where to write the data
-                   downsample_factor = 1/save_downsampled,
-                   resolve = True)
+                       aligned[y1:y2, x1:x2], 
+                       global_z, 
+                       offset, #
+                       preserve_mask = write_mask, 
+                       downsample_factor = 1/save_downsampled,
+                       resolve = True)
         
         # Log progress
         metadata = {
