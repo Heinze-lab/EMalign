@@ -231,6 +231,9 @@ def compute_laplacian_var(arr, mask=None):
     - Commonly used for autofocus and blur detection
     - Optimized: Crops to mask bounding box before filtering to reduce computation
     '''
+    
+    from emalign.io.process.mask import mask_to_bbox
+
     if mask is None:
         l = cv2.Laplacian(arr, cv2.CV_64F)
         return np.var(l)
@@ -238,8 +241,8 @@ def compute_laplacian_var(arr, mask=None):
     # cv2 needs 2D array so masking needs to happen after computation
     # Crop to relevant bbox to limit computations
     ymin, ymax, xmin, xmax = mask_to_bbox(mask)
-    arr_crop = arr[ymin:ymax+1, xmin:xmax+1]
-    mask_crop = mask[ymin:ymax+1, xmin:xmax+1]
+    arr_crop = arr[ymin:ymax, xmin:xmax]
+    mask_crop = mask[ymin:ymax, xmin:xmax]
 
     l = cv2.Laplacian(arr_crop, cv2.CV_64F)[mask_crop]
     return np.var(l)
@@ -277,12 +280,14 @@ def compute_sobel_mean(arr, mask=None):
         sobel_y = cv2.Sobel(arr, cv2.CV_64F, 0, 1, ksize=5)
         sobel = np.sqrt(sobel_x**2 + sobel_y**2)
         return np.mean(sobel)
+    
+    from emalign.io.process.mask import mask_to_bbox
 
     # cv2 needs 2D array so masking needs to happen after computation
     # Crop to relevant bbox to limit computations
     ymin, ymax, xmin, xmax = mask_to_bbox(mask)
-    arr_crop = arr[ymin:ymax+1, xmin:xmax+1]
-    mask_crop = mask[ymin:ymax+1, xmin:xmax+1]
+    arr_crop = arr[ymin:ymax, xmin:xmax]
+    mask_crop = mask[ymin:ymax, xmin:xmax]
 
     sobel_x = cv2.Sobel(arr_crop, cv2.CV_64F, 1, 0, ksize=5)[mask_crop]
     sobel_y = cv2.Sobel(arr_crop, cv2.CV_64F, 0, 1, ksize=5)[mask_crop]
@@ -322,12 +327,14 @@ def compute_grad_mag(arr, mask=None):
         gy, gx = np.gradient(arr)
         gnorm = np.sqrt(gx**2 + gy**2)
         return np.average(gnorm)
-
+    
+    from emalign.io.process.mask import mask_to_bbox
+    
     # cv2 needs 2D array so masking needs to happen after computation
     # Crop to relevant bbox to limit computations
     ymin, ymax, xmin, xmax = mask_to_bbox(mask)
-    arr_crop = arr[ymin:ymax+1, xmin:xmax+1]
-    mask_crop = mask[ymin:ymax+1, xmin:xmax+1]
+    arr_crop = arr[ymin:ymax, xmin:xmax]
+    mask_crop = mask[ymin:ymax, xmin:xmax]
 
     gy, gx = np.gradient(arr_crop)
     gnorm = np.sqrt(gx**2 + gy**2)[mask_crop]

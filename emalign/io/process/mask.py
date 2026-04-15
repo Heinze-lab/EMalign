@@ -49,4 +49,4 @@ def mask_to_bbox(mask):
     x = np.any(mask, axis=0)
     ymin, ymax = np.where(y)[0][[0, -1]]
     xmin, xmax = np.where(x)[0][[0, -1]]
-    return ymin, ymax, xmin, xmax
+    return ymin, ymax + 1, xmin, xmax + 1
