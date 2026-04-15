@@ -71,6 +71,11 @@ def prep_align_stacks(main_dir,
         logging.info(f'Determined z offset from previous dataset: {offset[0]}')
 
     # Find tilesets with desired resolution
+    if len(resolution) == 1:
+        resolution = resolution * 2
+    elif len(resolution) > 2:
+        raise ValueError(f'Please provide a 2D resolution. Resolution provided: {resolution}')
+
     logging.info(f'Looking for tilesets in: {main_dir}')
     stack_paths = io_backend.get_tilesets(main_dir, resolution, dir_pattern, num_workers)
 
@@ -164,7 +169,6 @@ def prep_align_stacks(main_dir,
 
 
 if __name__ == '__main__':
-
 
     parser=argparse.ArgumentParser('Script aligning tiles in XY based on SOFIMA (Scalable Optical Flow-based Image Montaging and Alignment). \n\
                                     This script was written to match the file structure produced by the ThermoFisher MAPs software.')
