@@ -9,17 +9,24 @@ from sofima import stitch_rigid, stitch_elastic, mesh, flow_utils
 def get_coarse_offset(tile_map, 
                       tile_space,
                       overlap,
+                      overlap_pad=0,
                       min_range=(10,100,0),
                       min_overlap=5,
-                      filter_size=5):
+                      filter_size=5,
+                      overlap_cap=500):
     '''
     Compute coarse offset and mesh for initial rigid XY alignment
     '''
     
+    # Very large overlap are overkill and make this very slow
+    overlap = min(overlap, overlap_cap)
+    coarse_overlap = ((overlap, overlap+overlap_pad), # try (first, second)
+                      (overlap, overlap+overlap_pad))
+
     # Coarse rigid offset between tiles
     cx, cy = stitch_rigid.compute_coarse_offsets(tile_space, 
                                                  tile_map, 
-                                                 overlaps_xy=((overlap),(overlap)),
+                                                 overlaps_xy=coarse_overlap,
                                                  min_range=min_range,
                                                  min_overlap=min_overlap,
                                                  filter_size=filter_size)
