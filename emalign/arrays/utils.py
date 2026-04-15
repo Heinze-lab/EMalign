@@ -37,7 +37,7 @@ def resample(array, ratio):
 
     if array.dtype == bool:
         # cv2.resize doesn't want boolean
-        array = cv2.resize(array.astype(np.uint8), None, fx=ratio, fy=ratio).astype(bool)
+        array = cv2.resize(array.astype(np.uint8), None, fx=ratio, fy=ratio, interpolation=cv2.INTER_NEAREST).astype(bool)
     else:
         array = cv2.resize(array, None, fx=ratio, fy=ratio)
     return array
