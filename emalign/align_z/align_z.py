@@ -311,6 +311,7 @@ def _compute_flow(dataset,
                                                                       pad_overlap=PAD_OVERLAP)
             
             # Refine alignment
+            # ref and mov have been resampled already so scale does not need to be accounted for
             M, output_shape, ref_xy_offset, valid_estimate, _ = estimate_transform_sift(overlap_ref, mov, 0.1, refine_estimate=True)
             if not valid_estimate:
                 M, output_shape, ref_xy_offset, valid_estimate, _ = estimate_transform_sift(overlap_ref, mov, 0.3, refine_estimate=True)
