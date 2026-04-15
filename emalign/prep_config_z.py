@@ -76,7 +76,7 @@ def load_configs_from_files(config_paths, exclude):
 
 def create_alignment_configs(datasets, z_offsets, output_configs_dir, config_z, reference_path, 
                              reference_offset, destination_path, project_name, mongodb_config_filepath,
-                             yx_target_resolution, save_downsampled, num_workers):
+                             yx_target_resolution, save_downsampled):
     '''Create alignment configuration files for all datasets.
 
     Args:
@@ -89,7 +89,6 @@ def create_alignment_configs(datasets, z_offsets, output_configs_dir, config_z, 
         mongodb_config_filepath: Path to MongoDB config
         yx_target_resolution: Target resolution in YX
         save_downsampled: Downsampling factor
-        num_workers: Number of worker threads
 
     Returns:
         tuple: (root_stack, paths, reverse_order, root_offset)
@@ -212,7 +211,6 @@ def create_alignment_configs(datasets, z_offsets, output_configs_dir, config_z, 
                 'first_slice': first_slice,
                 'yx_target_resolution': yx_target_resolution,
                 'save_downsampled': save_downsampled,
-                'num_workers': num_workers,
                 'overwrite': False
             }
             config = add_config_metadata(config)
@@ -233,7 +231,6 @@ def prep_config_z(project_dir: str,
                   reference_offset: Optional[int] = 0,
                   destination_path: Optional[str] = None,
                   exclude: List[str] = None,
-                  num_workers: int = 1,
                   save_downsampled: float = 10,
                   force_overwrite: bool = False) -> str:
     '''Generate Z alignment configuration files.
@@ -244,7 +241,6 @@ def prep_config_z(project_dir: str,
         config_paths: List of paths to XY main config files (optional, derived from project_dir if not provided)
         destination_path: Path to output zarr (optional, derived from config if not provided)
         exclude: List of patterns to exclude from datasets
-        num_workers: Number of worker threads
         save_downsampled: Downsampling factor for inspection store
         force_overwrite: Whether to overwrite existing configs
 
@@ -318,7 +314,7 @@ def prep_config_z(project_dir: str,
     root_stack, paths, reverse_order, root_offset = create_alignment_configs(
         datasets, z_offsets, output_configs_dir, config_z, reference_path, reference_offset,
         destination_path, project_name, mongodb_config_filepath,
-        yx_target_resolution, save_downsampled, num_workers
+        yx_target_resolution, save_downsampled
     )
 
     # Validate created configs
@@ -338,7 +334,7 @@ def prep_config_z(project_dir: str,
     logging.info(f'Number of alignment paths: {len(paths)}')
     logging.info(f'\nConfiguration complete!')
     logging.info(f'Config directory: {output_configs_dir}')
-    logging.info(f'\n\nTo run alignment:\nCUDA_VISIBLE_DEVICES=0,1 python align_dataset_z.py -p {project_dir} -c {num_workers}')
+    logging.info(f'\n\nTo run alignment:\nCUDA_VISIBLE_DEVICES=0,1 python align_dataset_z.py -p {project_dir} -c 1')
 
     return output_configs_dir
 
@@ -395,12 +391,6 @@ if __name__ == '__main__':
                         nargs='+',
                         default=[],
                         help='Patterns to exclude from datasets. Default: all datasets are processed')
-    parser.add_argument('-c', '--cores',
-                        metavar='CORES',
-                        dest='num_workers',
-                        type=int,
-                        default=1,
-                        help='Number of threads to use. Default: 1')
     parser.add_argument('-ds', '--downsample-scale',
                         metavar='SCALE',
                         dest='save_downsampled',
