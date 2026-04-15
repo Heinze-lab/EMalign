@@ -27,11 +27,13 @@ logging.basicConfig(level=logging.INFO)
 logging.getLogger('absl').setLevel(logging.WARNING)
 logging.getLogger('jax._src.xla_bridge').setLevel(logging.WARNING)
 
+# Constants
+NUM_WORKERS = 1
 
 def align_dataset_xy(config_path,
                      num_workers,
                      overwrite=False,
-                     wipe_progress_stack=None):
+                     wipe_progress_stacks=None):
     '''Align and stitch in XY consecutive image stacks defined by a configuration file.
 
     Image stacks will be aligned one by one based on paths and parameters defined in a configuration file.
@@ -43,7 +45,7 @@ def align_dataset_xy(config_path,
             See documentation for how to format the configuration file (work in progress).
         num_workers (int): Number of threads to use for multiprocessing when relevant.
         overwrite (bool): Whether to overwrite dataset. If True, will delete existing dataset and start over. If False, will check for progress and skip processed slices. Defaults to False.
-        wipe_progress_stack (str, optional): Name of the stack to wipe progress for. Defaults to None.
+        wipe_progress_stacks (str, optional): Name of the stack to wipe progress for. Defaults to None.
     '''
     
     with open(config_path, 'r') as f:
@@ -83,7 +85,7 @@ def align_dataset_xy(config_path,
                                                 desc='Processing stacks', 
                                                 leave=True):
         tile_maps_paths, tile_maps_invert, ignore_slices = parse_stack_info(stack_config_path)
-        wipe_this_stack = (stack_name == wipe_progress_stack)
+        wipe_this_stack = (stack_name in wipe_progress_stacks)
         align_stack_xy(output_path=output_path,
                        stack_name=stack_name,
                        tile_maps_paths=tile_maps_paths,
