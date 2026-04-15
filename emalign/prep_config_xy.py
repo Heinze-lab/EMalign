@@ -22,6 +22,8 @@ logging.basicConfig(level=logging.INFO)
 logging.getLogger('absl').setLevel(logging.WARNING)
 logging.getLogger('jax._src.xla_bridge').setLevel(logging.WARNING)
 
+# Constants
+NUM_WORKERS = 1
 
 def prep_align_stacks(main_dir,
                       project_dir,
@@ -61,7 +63,7 @@ def prep_align_stacks(main_dir,
         # Use same name as project_dir
         output_name = os.path.basename(project_dir)
     output_zarr = output_name if output_name.endswith('.zarr') else output_name.rstrip('. ') + '.zarr'
-    output_path = os.path.join(project_dir, output_name)
+    output_path = os.path.join(project_dir, output_zarr)
 
     # Determine the offset from a previous dataset that this one relates to
     if prev_cfg is not None:
