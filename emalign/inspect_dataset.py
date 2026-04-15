@@ -45,6 +45,9 @@ def read_data(
 
     if not keep_missing:
         data = data[data.any(axis=(1,2))]
+
+        if not data.any():
+            raise RuntimeError(f'No data found at {dataset_path}')
     
     return data
 
