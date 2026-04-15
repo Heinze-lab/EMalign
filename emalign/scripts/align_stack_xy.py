@@ -77,6 +77,7 @@ def align_stack_xy(output_path,
     if wipe_progress_flag:
         logging.info(f"Wiping progress for stack: {stack_name}")
         wipe_progress(db, stack_name)
+        overwrite=True
 
     if overwrite:
         logging.warning('Existing dataset will be deleted and aligned from scratch.')
@@ -259,7 +260,6 @@ def align_stack_xy(output_path,
             logging.warning(f'{stack.stack_name}: stitch score too low, tiles may not overlap if margin is too large (z = {z})')
 
         log_progress(db, stack_name, step_name, z, z - z_offset, metadata)
-
 
     pbar.set_description(f'{stack.stack_name}: done')
 
