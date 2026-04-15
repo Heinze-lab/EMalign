@@ -50,7 +50,9 @@ def get_elastic_mesh(tile_map,
                      patch_size=160,
                      k0=0.01,
                      k=0.1,
-                     gamma=0):
+                     gamma=0,
+                     prev_x=None,
+                     batch_size=512):
     
     ''' 
     Compute elastic mesh for XY alignment.
@@ -64,13 +66,13 @@ def get_elastic_mesh(tile_map,
                                                         0, 
                                                         stride=(stride, stride),
                                                         patch_size=(patch_size,patch_size),
-                                                        batch_size=128)
+                                                        batch_size=batch_size)
     fine_y, offsets_y = stitch_elastic.compute_flow_map(tile_map, 
                                                         cy, 
                                                         1,
                                                         stride=(stride, stride),
                                                         patch_size=(patch_size,patch_size),
-                                                        batch_size=128)
+                                                        batch_size=batch_size)
     
     kwargs = {"min_peak_ratio": 1.4, "min_peak_sharpness": 1.4, "max_deviation": 5, "max_magnitude": 0}
     fine_x = {k: flow_utils.clean_flow(v[:, np.newaxis, ...], **kwargs)[:, 0, :, :] for k, v in fine_x.items()}
@@ -87,6 +89,10 @@ def get_elastic_mesh(tile_map,
         data_x, data_y, list(tile_map.keys()),
         coarse_mesh[:, 0, ...], stride=(stride, stride),
         tile_shape=next(iter(tile_map.values())).shape)
+    
+    if prev_x is not None:
+       # If an initial state of x is provided, use it to gain time
+       x = prev_x
     
     @jax.jit
     def prev_fn(x):
@@ -115,4 +121,4 @@ def get_elastic_mesh(tile_map,
     idx_to_key = {v: k for k, v in key_to_idx.items()}
     meshes = {idx_to_key[i]: np.array(x[:, i:i+1 :, :]) for i in range(x.shape[1])}
     
-    return meshes
+    return meshes, x
