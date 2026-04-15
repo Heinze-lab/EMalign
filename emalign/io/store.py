@@ -452,10 +452,10 @@ def find_ref_slice(dataset: ts.TensorStore, z: Optional[int] = None,
     count = 0
     while not img.any():
         if count >= max_depth:
-            raise IndexError(f'No non-empty slice found in dataset before reaching max search depth (searched z range: {z_min} to {z_max})')
+            raise IndexError(f'No non-empty slice found in dataset ({dataset.kvstore.path}) before reaching max search depth (searched z range: {z_min} to {z_max})')
         z += increment
         if z < z_min or z > z_max:
-            raise IndexError(f'No non-empty slice found in dataset (searched z range: {z_min} to {z_max})')
+            raise IndexError(f'No non-empty slice found in dataset ({dataset.kvstore.path}) (searched z range: {z_min} to {z_max})')
         img = dataset[z].read().result()
         count += 1
 
