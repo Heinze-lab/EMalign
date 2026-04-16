@@ -389,8 +389,6 @@ def compute_flow_dataset(dataset,
                          scale,
                          patch_size,
                          stride,
-                         max_deviation,
-                         max_magnitude,
                          db,
                          original_shape=None,
                          ignore_slices=[],
@@ -405,7 +403,6 @@ def compute_flow_dataset(dataset,
                          ref_scale=1,
                          z_offset=0):
 
-    dataset_name = os.path.basename(os.path.abspath(dataset.kvstore.path))
     flow, transform, bbox_ref = _compute_flow(dataset=dataset,
                                               original_shape=original_shape,
                                               ignore_slices=ignore_slices,
@@ -446,7 +443,16 @@ def compute_flow_dataset(dataset,
                                   db=db,
                                   z_offset=z_offset)
     assert not np.isnan(ds_flow).all()
+    return flow, ds_flow, transform, bbox_ref
 
+def combine_flow(flow, 
+                ds_flow,
+                stride,
+                patch_size,
+                max_magnitude,
+                max_deviation,
+                ds_scale,
+                dataset_name):
     pad = patch_size // 2 // stride
     flow = np.pad(flow, [[0, 0], [0, 0], [pad, pad], [pad, pad]], constant_values=np.nan)
     ds_flow = np.pad(ds_flow, [[0, 0], [0, 0], [pad, pad], [pad, pad]], constant_values=np.nan)
@@ -475,11 +481,10 @@ def compute_flow_dataset(dataset,
         resampled = map_utils.resample_map(
             ds_flow[:, z:z+1, ...],  #
             bbox_ds, bbox,
-            1 / scale, 1)
-        ds_flow_hires[:, z:z + 1, ...] = resampled / scale
+            1 / ds_scale, 1)
+        ds_flow_hires[:, z:z + 1, ...] = resampled / ds_scale
 
-    final_flow = flow_utils.reconcile_flows((flow, ds_flow_hires), max_gradient=0, max_deviation=max_deviation, min_patch_size=400)
-    return final_flow, transform, bbox_ref
+    return flow_utils.reconcile_flows((flow, ds_flow_hires), max_gradient=0, max_deviation=max_deviation, min_patch_size=400)
 
 
 def get_inv_map(flow, stride, dataset_name, mesh_config=None, relax_xy=False):
