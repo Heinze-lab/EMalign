@@ -22,10 +22,12 @@ setup(
             'scipy',
             'pymongo',
             'tqdm',
-            'git+https://github.com/google-research/sofima.git@5c5642cded4b33ec7e975afc3d85f15c0126fb2e'
+            'sofima @ git+https://github.com/google-research/sofima.git@5c5642cded4b33ec7e975afc3d85f15c0126fb2e'
         ],
         extras_require={
-            'neuroglancer'
+            'neuroglancer': [
+                'neuroglancer'
+            ]
         },
         keywords=['python', 'alignment']
     )
