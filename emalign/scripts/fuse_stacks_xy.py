@@ -140,9 +140,12 @@ def fuse_stacks_group(config,
 
     z_shape = config['zmax'] - config['zmin']
 
+    destination_basepath = os.path.dirname(os.path.abspath(config['dataset_paths'][0]))
     if destination_path is None:
-        destination_basepath = os.path.dirname(os.path.abspath(config['dataset_paths'][0]))
         destination_path = os.path.join(destination_basepath, destination_name)
+    else:
+        destination_path = os.path.abspath(destination_path)
+        destination_basepath = os.path.dirname(destination_path)
     destination_mask_path = os.path.join(destination_basepath, destination_name + '_mask')
 
     if overwrite or not os.path.exists(destination_path):
@@ -231,10 +234,11 @@ def fuse_stacks_group(config,
                 print(f'Error in stack (z = {z}): {stack}')
                 raise(e)
             
-            if pbar_stacks.n == pbar_stacks.total-1:
-                pbar_stacks.set_description('Writing slice...')
-                destination, _ = write_data(destination, canvas, z)
-                destination_mask, _ = write_data(destination_mask, canvas_mask, z)
+
+        if canvas is not None:
+            pbarz.set_description('Writing slice...')
+            destination, _ = write_data(destination, canvas, z)
+            destination_mask, _ = write_data(destination_mask, canvas_mask, z)
 
         # Log progress
         metadata = {
