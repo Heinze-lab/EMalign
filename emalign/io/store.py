@@ -150,7 +150,18 @@ def open_store(
         if fill_value is not None:
             kwargs['fill_value'] = fill_value
 
-        return ts.open(spec, **kwargs).result()
+        store = ts.open(spec, **kwargs).result()
+
+        # Tensorstore creates a bare zarr array but never marks the parent
+        # container as a zarr group. Downstream consumers (e.g. EMsegment via
+        # gunpowder/funlib.persistence) open the container as a group and need a
+        # .zgroup file. Write one when the array lives inside a *.zarr container.
+        parent = os.path.dirname(path)
+        if parent.endswith('.zarr'):
+            with open(os.path.join(parent, '.zgroup'), 'w') as f:
+                json.dump({'zarr_format': 2}, f)
+
+        return store
     
 
 def set_store_attributes(store: ts.TensorStore | str, attrs: dict) -> bool:
