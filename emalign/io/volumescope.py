@@ -136,7 +136,7 @@ def parse_yx_pos_from_name(n):
         - All tiles in a slice should have unique (y, x) positions
         - Convention: (0, 0) is top-left of the tile grid
     '''
-    xy_pos = re.findall(r'\d+', n)[:2] # first two numbers in the name
+    xy_pos = re.findall(r'\d+', os.path.basename(n))[:2] # first two numbers in the name
     return tuple(int(i)-1 for i in xy_pos)[::-1]
 
 
@@ -158,4 +158,5 @@ def parse_slice_from_name(n):
         - Slices are sorted numerically, so consistent numbering is required
         - The returned value is used as a dictionary key to group tiles by slice
     '''
-    return int(re.findall(r'\d+', n.split('s')[-1])[0])
+    # Parse the basename only, so digits/'s' in parent directories can't interfere.
+    return int(re.findall(r'\d+', os.path.basename(n).split('s')[-1])[0])
