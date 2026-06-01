@@ -63,6 +63,21 @@ class Stack:
 
         self.tile_maps_invert = dict(zip(tile_indices, [None]*len(tile_indices)))
         
+    def shift_z(self, delta):
+        '''Shift every Z slice index of this stack by `delta`.
+        Used to concatenate stacks coming from different input directories along Z.
+
+        Args:
+            delta (int): Amount to add to every slice index.
+        '''
+        if not delta:
+            return
+
+        self.slice_to_tilemap = {z + delta: tm for z, tm in self.slice_to_tilemap.items()}
+        self.slices = sorted(self.slice_to_tilemap)
+        if hasattr(self, 'slice_to_paths'):
+            self.slice_to_paths = {z + delta: p for z, p in self.slice_to_paths.items()}
+
     def _set_tilemaps_paths(self, tile_map_paths):
 
         self.slice_to_tilemap = tile_map_paths
