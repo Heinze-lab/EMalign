@@ -393,9 +393,9 @@ def dataset_to_pyramid(dataset_path: str,
                         pbar.set_description('Building pyramid...')
                         pyramid = build_pyramid(data, max_layer)
                         
-                        # Write tiles
+                        # Write tiles, starting from slice zero because that's what catmaid wants
                         pbar.set_description('Writing pyramid...')
-                        write_pyramid_tiles(pyramid, z, output_path, tile_shape, 
+                        write_pyramid_tiles(pyramid, z - slice_range[0], output_path, tile_shape, 
                                             jpeg_quality, executor=tile_executor)
                     
                     pbar.update(1)
@@ -460,7 +460,7 @@ def dataset_to_pyramid(dataset_path: str,
 
     # Get dataset attributes
     resolution = [1, 1, 1]
-    voxel_offset = [0, 0, 0]
+    voxel_offset = [slice_range[0], 0, 0] # We started at index zero so Z offset is the start of range
     try:
         attrs = get_dataset_attributes(dataset_sync)
         resolution = attrs.get('resolution', resolution)[::-1]
