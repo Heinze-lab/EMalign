@@ -56,7 +56,7 @@ def align_dataset_xy(config_path,
         project_name = os.path.basename(main_config['output_path']).rstrip('.zarr')
     mongodb_config_filepath = main_config.get('mongodb_config_filepath')
 
-    main_dir        = main_config['main_dir']
+    main_dir        = main_config['input_dirs']
     output_path     = main_config['output_path']
     resolution      = main_config['resolution']
     offset          = main_config['offset']
