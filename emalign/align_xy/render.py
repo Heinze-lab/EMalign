@@ -77,7 +77,16 @@ def get_render_order(tile_map, tile_masks=None, img_q_fun=None):
         return sorted(tile_map)
 
     masks = tile_masks or {}
-    return sorted(tile_map, key=lambda k: img_q_fun(tile_map[k], masks.get(k)))
+
+    def quality(k):
+        # tile_masks may be uint8 (np.ones_like the image); the quality functions index with
+        # the mask, so it must be boolean to act as a selection rather than fancy indexing.
+        mask = masks.get(k)
+        if mask is not None:
+            mask = mask.astype(bool)
+        return img_q_fun(tile_map[k], mask)
+
+    return sorted(tile_map, key=quality)
 
 
 def render_slice_xy(destination,

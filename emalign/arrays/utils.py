@@ -244,7 +244,7 @@ def compute_laplacian_var(arr, mask=None):
     arr_crop = arr[ymin:ymax, xmin:xmax]
     mask_crop = mask[ymin:ymax, xmin:xmax]
 
-    l = cv2.Laplacian(arr_crop, cv2.CV_64F)[mask_crop]
+    l = cv2.Laplacian(arr_crop, cv2.CV_64F)[mask_crop.astype(bool)]
     return np.var(l)
 
 
@@ -289,8 +289,8 @@ def compute_sobel_mean(arr, mask=None):
     arr_crop = arr[ymin:ymax, xmin:xmax]
     mask_crop = mask[ymin:ymax, xmin:xmax]
 
-    sobel_x = cv2.Sobel(arr_crop, cv2.CV_64F, 1, 0, ksize=5)[mask_crop]
-    sobel_y = cv2.Sobel(arr_crop, cv2.CV_64F, 0, 1, ksize=5)[mask_crop]
+    sobel_x = cv2.Sobel(arr_crop, cv2.CV_64F, 1, 0, ksize=5)[mask_crop.astype(bool)]
+    sobel_y = cv2.Sobel(arr_crop, cv2.CV_64F, 0, 1, ksize=5)[mask_crop.astype(bool)]
     sobel = np.sqrt(sobel_x**2 + sobel_y**2)
     return np.mean(sobel)
 
@@ -337,7 +337,7 @@ def compute_grad_mag(arr, mask=None):
     mask_crop = mask[ymin:ymax, xmin:xmax]
 
     gy, gx = np.gradient(arr_crop)
-    gnorm = np.sqrt(gx**2 + gy**2)[mask_crop]
+    gnorm = np.sqrt(gx**2 + gy**2)[mask_crop.astype(bool)]
     return np.average(gnorm)
 
 
