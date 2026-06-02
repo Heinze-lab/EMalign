@@ -50,7 +50,8 @@ def align_stack_xy(output_path,
                    num_cores=1,
                    overwrite=False,
                    wipe_progress_flag=False,
-                   img_q_fun=None):
+                   img_q_fun=None,
+                   min_stitch_score=0.8):
     
     '''Align and stitch image stack in XY. 
 
@@ -74,6 +75,8 @@ def align_stack_xy(output_path,
             slice (highest quality on top) and reused for all subsequent slices. When None (default), tiles are ordered by grid
             position so that the first tiles acquired are rendered last (on top). Defaults to None.
             e.g.: img_q_fun = lambda img, m: compute_laplacian_var(img, m)
+        min_stitch_score (float): Minimum acceptable stitch score (0 to 1) for a slice to be written. Slices below this
+            are retried once from scratch and raise an error if they still fail. Lower values are more permissive. Defaults to 0.8.
     '''
 
     client = get_mongo_client(mongodb_config_filepath)
@@ -236,15 +239,15 @@ def align_stack_xy(output_path,
                 margin_map = get_tile_map_margins(tm.tile_space, margin)
                                         
                 pbar.set_description(f'{stack.stack_name}: Rendering...')
-                min_stitch_score = 0.8
-                dataset, dataset_mask, stitch_score = render_slice_xy(dataset, z-z_offset, tile_map, meshes, render_stride, tm.tile_masks, 
+                dataset, dataset_mask, stitch_score = render_slice_xy(dataset, z-z_offset, tile_map, meshes, render_stride, tm.tile_masks,
                                                                     parallelism=num_cores, margin_overrides=margin_map, dest_mask=dataset_mask, 
                                                                     resize_canvas=True, min_stitch_score=min_stitch_score)
                 if np.min(stitch_score) < min_stitch_score and attempt == 0:
                     # Stitch was not good enough, let's try again from scratch
                     compute_overlap = True
                 elif np.min(stitch_score) < min_stitch_score and attempt > 0:
-                    raise RuntimeError('Slice could not be stitched properly.')
+                    raise RuntimeError(f'Stitch score too low after a second attempt ({np.min(stitch_score)}). \
+                                        Alignment could not be performed ({stack_name}: {z})')
                 else:
                     # Stitch was good, data was written to file, let's move on
                     break
@@ -324,6 +327,7 @@ if __name__ == '__main__':
     apply_clahe     = main_config['apply_clahe']
     stack_configs   = main_config['stack_configs']
     img_q_fun       = resolve_img_q_fun(main_config.get('img_on_top'))
+    min_stitch_score = main_config.get('min_stitch_score', 0.8)
 
     tile_maps_paths, tile_maps_invert = parse_stack_info(stack_configs[args.stack_name])
 
@@ -341,4 +345,5 @@ if __name__ == '__main__':
                    project_name=project_name,
                    mongodb_config_filepath=mongodb_config_filepath,
                    wipe_progress_flag=args.wipe_progress,
-                   img_q_fun=img_q_fun)
+                   img_q_fun=img_q_fun,
+                   min_stitch_score=min_stitch_score)

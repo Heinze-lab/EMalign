@@ -68,6 +68,8 @@ def align_dataset_xy(config_path,
     io_mode         = main_config['io_mode']
     # Optional: which tile is rendered on top. See resolve_img_q_fun for accepted values.
     img_q_fun       = resolve_img_q_fun(main_config.get('img_on_top', 'sharpness'))
+    # Optional: minimum acceptable stitch score (0 to 1) for a slice to be written.
+    min_stitch_score = main_config.get('min_stitch_score', 0.8)
 
     if not output_path.endswith('.zarr'):
         raise RuntimeError('Output path must be a zarr container (.zarr)')
@@ -105,7 +107,8 @@ def align_dataset_xy(config_path,
                        num_cores=num_workers,
                        overwrite=overwrite,
                        wipe_progress_flag=wipe_this_stack,
-                       img_q_fun=img_q_fun)
+                       img_q_fun=img_q_fun,
+                       min_stitch_score=min_stitch_score)
     logging.info(f'Done! Output can be found at: {output_path}')
     
 
