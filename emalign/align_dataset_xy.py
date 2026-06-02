@@ -67,7 +67,7 @@ def align_dataset_xy(config_path,
     stack_configs   = main_config['stack_configs']
     io_mode         = main_config['io_mode']
     # Optional: which tile is rendered on top. See resolve_img_q_fun for accepted values.
-    img_q_fun       = resolve_img_q_fun(main_config.get('img_on_top', 'sharpness'))
+    img_q_fun       = resolve_img_q_fun(main_config.get('img_on_top', 'laplacian'))
     # Optional: minimum acceptable stitch score (0 to 1) for a slice to be written.
     min_stitch_score = main_config.get('min_stitch_score', 0.8)
 
