@@ -20,6 +20,7 @@ import sys
 from tqdm import tqdm
 
 from emalign.arrays.stacks import parse_stack_info
+from emalign.align_xy.render import resolve_img_q_fun
 from emalign.scripts.align_stack_xy import align_stack_xy
 
 
@@ -65,6 +66,8 @@ def align_dataset_xy(config_path,
     apply_clahe     = main_config['apply_clahe']
     stack_configs   = main_config['stack_configs']
     io_mode         = main_config['io_mode']
+    # Optional: which tile is rendered on top. See resolve_img_q_fun for accepted values.
+    img_q_fun       = resolve_img_q_fun(main_config.get('img_on_top', 'sharpness'))
 
     if not output_path.endswith('.zarr'):
         raise RuntimeError('Output path must be a zarr container (.zarr)')
@@ -101,7 +104,8 @@ def align_dataset_xy(config_path,
                        mongodb_config_filepath=mongodb_config_filepath,
                        num_cores=num_workers,
                        overwrite=overwrite,
-                       wipe_progress_flag=wipe_this_stack)
+                       wipe_progress_flag=wipe_this_stack,
+                       img_q_fun=img_q_fun)
     logging.info(f'Done! Output can be found at: {output_path}')
     
 

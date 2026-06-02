@@ -20,7 +20,7 @@ import argparse
 
 from tqdm import tqdm
 
-from ..align_xy.render import render_slice_xy
+from ..align_xy.render import render_slice_xy, get_render_order, resolve_img_q_fun
 from ..align_xy.stitch_ongrid import get_coarse_offset, get_elastic_mesh
 from ..arrays.stacks import Stack, parse_stack_info
 from ..arrays.tile_map import get_tile_map_margins
@@ -49,7 +49,8 @@ def align_stack_xy(output_path,
                    mongodb_config_filepath=None,
                    num_cores=1,
                    overwrite=False,
-                   wipe_progress_flag=False):
+                   wipe_progress_flag=False,
+                   img_q_fun=None):
     
     '''Align and stitch image stack in XY. 
 
@@ -68,6 +69,11 @@ def align_stack_xy(output_path,
         num_cores (int): Number of CPUs to use for rendering stitched images. Defaults to 1.
         overwrite (bool): Whether to overwrite dataset. If True, will delete existing dataset and start over. If False, will check for progress and skip processed slices. Defaults to False.
         wipe_progress_flag (bool): Whether to wipe progress for the stack. Defaults to False.
+        img_q_fun (callable, optional): Function taking an image and its mask, returning a scalar that is higher for higher quality/sharpness.
+            When provided, it determines which tile is rendered on top: the render order is computed once on the first processed
+            slice (highest quality on top) and reused for all subsequent slices. When None (default), tiles are ordered by grid
+            position so that the first tiles acquired are rendered last (on top). Defaults to None.
+            e.g.: img_q_fun = lambda img, m: compute_laplacian_var(img, m)
     '''
 
     client = get_mongo_client(mongodb_config_filepath)
@@ -128,6 +134,10 @@ def align_stack_xy(output_path,
     
     # Compute overlap for the first slice and for others when necessary
     compute_overlap=True
+
+    # Render order (which tile ends up on top) is determined once on the first processed
+    # slice and reused for all subsequent slices.
+    render_order=None
 
     # Check what is to be processed
     if overwrite:
@@ -213,8 +223,16 @@ def align_stack_xy(output_path,
                                             gamma=gamma,
                                             batch_size=256
                                                 )
-                # Ensure that first tiles acquired are rendered last because they are sharper and should be on top
-                meshes = {k:meshes[k] for k in sorted(meshes)[::-1]}
+                # Determine the render order once (on the first processed slice) and reuse it
+                # for every subsequent slice. Tiles rendered last end up on top: by default the
+                # first tiles acquired (lowest position) are on top because they are sharper,
+                # but if img_q_fun is provided the highest-quality tile is placed on top instead.
+                if render_order is None:
+                    render_order = get_render_order(tile_map, tm.tile_masks, img_q_fun)
+                # Keep cached order, but stay robust to tiles missing from / new to this slice.
+                ordered_keys = [k for k in render_order if k in meshes]
+                ordered_keys += [k for k in sorted(meshes) if k not in render_order]
+                meshes = {k: meshes[k] for k in ordered_keys}
                 margin_map = get_tile_map_margins(tm.tile_space, margin)
                                         
                 pbar.set_description(f'{stack.stack_name}: Rendering...')
@@ -305,7 +323,8 @@ if __name__ == '__main__':
     apply_gaussian  = main_config['apply_gaussian']
     apply_clahe     = main_config['apply_clahe']
     stack_configs   = main_config['stack_configs']
-    
+    img_q_fun       = resolve_img_q_fun(main_config.get('img_on_top'))
+
     tile_maps_paths, tile_maps_invert = parse_stack_info(stack_configs[args.stack_name])
 
     align_stack_xy(output_path=output_path,
@@ -321,4 +340,5 @@ if __name__ == '__main__':
                    overwrite=args.overwrite,
                    project_name=project_name,
                    mongodb_config_filepath=mongodb_config_filepath,
-                   wipe_progress_flag=args.wipe_progress)
+                   wipe_progress_flag=args.wipe_progress,
+                   img_q_fun=img_q_fun)

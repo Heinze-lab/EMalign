@@ -8,6 +8,78 @@ from .utils import check_stitch
 from ..io.store import write_data
 
 
+def resolve_img_q_fun(spec):
+    '''Resolve a tile-quality function from a config value.
+
+    Used to turn a JSON-friendly config entry into the img_q_fun callable consumed by
+    get_render_order / align_stack_xy. The callable takes an image and its mask and returns
+    a scalar that is higher for higher quality/sharpness.
+
+    Args:
+        spec: One of:
+            - None, '', 'position' or 'default': no quality function (position-based order, the default).
+            - 'laplacian', 'auto' or 'quality': Laplacian-variance sharpness.
+            - 'sobel': mean Sobel gradient magnitude.
+            - 'sharpness': composite of Laplacian variance, Sobel mean and gradient magnitude
+              (matches the example in stitch_offgrid.stitch_images).
+            - a callable: returned unchanged.
+
+    Returns:
+        A callable img_q_fun, or None for the default position-based order.
+    '''
+    if spec is None or callable(spec):
+        return spec
+
+    from ..arrays.utils import compute_laplacian_var, compute_sobel_mean, compute_grad_mag
+
+    key = str(spec).lower()
+    funcs = {
+        '': None,
+        'position': None,
+        'default': None,
+        'laplacian': lambda img, m: compute_laplacian_var(img, m),
+        'auto': lambda img, m: compute_laplacian_var(img, m),
+        'quality': lambda img, m: compute_laplacian_var(img, m),
+        'sobel': lambda img, m: compute_sobel_mean(img, m),
+        'sharpness': lambda img, m: compute_laplacian_var(img, m) * 0.5
+                                    + compute_sobel_mean(img, m)
+                                    + compute_grad_mag(img, m) * 100,
+    }
+    if key not in funcs:
+        raise ValueError(f"Unknown img_on_top quality metric: {spec!r}. "
+                         f"Expected one of {sorted(funcs)} or a callable.")
+    return funcs[key]
+
+
+def get_render_order(tile_map, tile_masks=None, img_q_fun=None):
+    '''Determine the order in which tiles are rendered. Tiles rendered last end up on top.
+
+    By default (img_q_fun is None), tiles are ordered by their grid position so that the
+    first tiles acquired are rendered last (on top), because they are sharper.
+
+    If img_q_fun is provided, tiles are ordered by ascending quality so that the
+    highest-quality tile is rendered last (on top). This mirrors the automatic
+    'image on top' selection used in stitch_offgrid.stitch_images.
+
+    Args:
+        tile_map (dict of `np.ndarray`): Dictionary from [x,y] tile position to [y,x] image.
+        tile_masks (dict of `np.ndarray`, optional): Dictionary from [x,y] tile position to
+            [y,x] boolean masks corresponding to tile_map. Defaults to None.
+        img_q_fun (callable, optional): Function taking an image and its mask, returning a
+            scalar that is higher for higher quality/sharpness. If None, the default
+            position-based order is used.
+            e.g.: img_q_fun = lambda img, m: compute_laplacian_var(img, m)
+
+    Returns:
+        list: Tile position keys ordered from rendered-first (bottom) to rendered-last (top).
+    '''
+    if img_q_fun is None:
+        return sorted(tile_map)
+
+    masks = tile_masks or {}
+    return sorted(tile_map, key=lambda k: img_q_fun(tile_map[k], masks.get(k)))
+
+
 def render_slice_xy(destination,
                     z,
                     tile_map,
