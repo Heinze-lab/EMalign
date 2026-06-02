@@ -231,6 +231,7 @@ def align_stack_xy(output_path,
                 # first tiles acquired (lowest position) are on top because they are sharper,
                 # but if img_q_fun is provided the highest-quality tile is placed on top instead.
                 if render_order is None:
+                    pbar.set_description(f'{stack.stack_name}: Determining top image for first slice...')
                     render_order = get_render_order(tile_map, tm.tile_masks, img_q_fun)
                 # Keep cached order, but stay robust to tiles missing from / new to this slice.
                 ordered_keys = [k for k in render_order if k in meshes]
