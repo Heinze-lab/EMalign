@@ -71,7 +71,7 @@ def get_tileset_resolution(tileset_path):
     return (tileset_path, resolution)
 
 
-def get_tilesets(main_dir, resolution, dir_pattern, num_workers):
+def get_tilesets(main_dir, resolution, dir_patterns, num_workers):
     '''
     Find all tileset directories matching a given resolution and naming pattern.
 
@@ -81,7 +81,7 @@ def get_tilesets(main_dir, resolution, dir_pattern, num_workers):
     Args:
         main_dir: Parent directory containing tileset subdirectories.
         resolution: Target resolution as (y_res, x_res) tuple (e.g., (10, 10)).
-        dir_pattern: List of substrings that must appear in directory names
+        dir_patterns: List of substrings that must appear in directory names
             to be included (e.g., ['Sample1', 'ROI']).
         num_workers: Number of parallel threads for scanning directories.
 
@@ -110,7 +110,7 @@ def get_tilesets(main_dir, resolution, dir_pattern, num_workers):
             if result is None:
                 continue
             # Find the directory with the right pattern if relevant
-            for d in dir_pattern:
+            for d in dir_patterns:
                 if d in result[0].split('/')[-2] and result[1] == tuple(resolution):
                     stack_list.append(result[0])
     return sorted(stack_list)
@@ -120,15 +120,15 @@ def parse_yx_pos_from_name(n):
     '''
     Extract tile grid position (y, x) from a tile filename.
 
-    For VolumeScope/MAPs, filenames follow the pattern: Tile_XX-YY_sZZZZ.tif
-    where XX is the x-position and YY is the y-position (1-indexed).
+    For VolumeScope/MAPs, filenames follow the pattern: Tile_XXX-YYY_sZZZZ.tif
+    where XXX is the x-position and YYY is the y-position (1-indexed).
 
     Args:
-        n: Tile filename or full path (e.g., 'Tile_03-02_s0001.tif')
+        n: Tile filename or full path (e.g., 'Tile_003-002_s0001.tif')
 
     Returns:
         Tuple (y, x) as 0-indexed integers representing the tile's position
-        in the grid. Example: 'Tile_03-02_s0001.tif' -> (1, 2)
+        in the grid. Example: 'Tile_003-002_s0001.tif' -> (1, 2)
 
     Notes for implementing other backends:
         - Must return a tuple of (y, x) as 0-indexed integers
@@ -136,26 +136,27 @@ def parse_yx_pos_from_name(n):
         - All tiles in a slice should have unique (y, x) positions
         - Convention: (0, 0) is top-left of the tile grid
     '''
-    xy_pos = n.split('Tile_')[-1][:7]
-    return tuple(int(i)-1 for i in xy_pos.split('-'))[::-1]
+    xy_pos = re.findall(r'\d+', os.path.basename(n))[:2] # first two numbers in the name
+    return tuple(int(i)-1 for i in xy_pos)[::-1]
 
 
 def parse_slice_from_name(n):
     '''
     Extract the z-slice index from a tile filename.
 
-    For VolumeScope/MAPs, filenames follow the pattern: Tile_XX-YY_sZZZZ.tif
+    For VolumeScope/MAPs, filenames follow the pattern: Tile_XXX-YYY_sZZZZ.tif
     where ZZZZ is the slice number (e.g., s0001 for slice 1).
 
     Args:
-        n: Tile filename or full path (e.g., 'Tile_03-02_s0001.tif')
+        n: Tile filename or full path (e.g., 'Tile_003-002_s0001.tif')
 
     Returns:
-        Integer z-slice index. Example: 'Tile_03-02_s0001.tif' -> 1
+        Integer z-slice index. Example: 'Tile_003-002_s0001.tif' -> 1
 
     Notes for implementing other backends:
         - Must return an integer representing the z-slice
         - Slices are sorted numerically, so consistent numbering is required
         - The returned value is used as a dictionary key to group tiles by slice
     '''
-    return int(n.split('s')[-1][:4])
+    # Parse the basename only, so digits/'s' in parent directories can't interfere.
+    return int(re.findall(r'\d+', os.path.basename(n).split('s')[-1])[0])

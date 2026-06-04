@@ -1,0 +1,27 @@
+{
+  "scale_flow": 0.1,
+  "flow": {
+    "patch_size": 160,
+    "stride": 50,
+    "max_deviation": 350,
+    "max_magnitude": 80
+  },
+  "mesh": {
+    "dt": 0.001,
+    "gamma": 0.5,
+    "k0": 0.05,
+    "k": 0.4,
+    "num_iters": 1000,
+    "max_iters": 100000,
+    "stop_v_max": 0.01,
+    "dt_max": 1000,
+    "start_cap": 0.1,
+    "final_cap": 1.0,
+    "prefer_orig_order": true,
+    "remove_drift": false
+  },
+  "warp": {
+    "work_size": 512,
+    "overlap": 1
+  }
+}

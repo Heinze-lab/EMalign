@@ -20,13 +20,13 @@ import argparse
 
 from tqdm import tqdm
 
-from emalign.align_xy.render import render_slice_xy
-from emalign.align_xy.stitch_ongrid import get_coarse_offset, get_elastic_mesh
-from emalign.arrays.stacks import Stack, parse_stack_info
-from emalign.arrays.tile_map import get_tile_map_margins
-from emalign.io.store import open_store, set_store_attributes
-from emalign.io.progress import get_mongo_client, get_mongo_db, log_progress, check_progress, wipe_progress
-from emalign.io.backend import get_io_backend
+from ..align_xy.render import render_slice_xy, get_render_order, resolve_img_q_fun
+from ..align_xy.stitch_ongrid import get_coarse_offset, get_elastic_mesh
+from ..arrays.stacks import Stack, parse_stack_info
+from ..arrays.tile_map import get_tile_map_margins
+from ..io.store import open_store, set_store_attributes
+from ..io.progress import get_mongo_client, get_mongo_db, log_progress, check_progress, wipe_progress
+from ..io.backend import get_io_backend
 
 
 logging.basicConfig(level=logging.INFO)
@@ -45,10 +45,13 @@ def align_stack_xy(output_path,
                    apply_clahe,
                    project_name,
                    io_mode,
+                   ignore_slices=[],
                    mongodb_config_filepath=None,
                    num_cores=1,
                    overwrite=False,
-                   wipe_progress_flag=False):
+                   wipe_progress_flag=False,
+                   img_q_fun=None,
+                   min_stitch_score=0.8):
     
     '''Align and stitch image stack in XY. 
 
@@ -67,6 +70,13 @@ def align_stack_xy(output_path,
         num_cores (int): Number of CPUs to use for rendering stitched images. Defaults to 1.
         overwrite (bool): Whether to overwrite dataset. If True, will delete existing dataset and start over. If False, will check for progress and skip processed slices. Defaults to False.
         wipe_progress_flag (bool): Whether to wipe progress for the stack. Defaults to False.
+        img_q_fun (callable, optional): Function taking an image and its mask, returning a scalar that is higher for higher quality/sharpness.
+            When provided, it determines which tile is rendered on top: the render order is computed once on the first processed
+            slice (highest quality on top) and reused for all subsequent slices. When None (default), tiles are ordered by grid
+            position so that the first tiles acquired are rendered last (on top). Defaults to None.
+            e.g.: img_q_fun = lambda img, m: compute_laplacian_var(img, m)
+        min_stitch_score (float): Minimum acceptable stitch score (0 to 1) for a slice to be written. Slices below this
+            are retried once from scratch and raise an error if they still fail. Lower values are more permissive. Defaults to 0.8.
     '''
 
     client = get_mongo_client(mongodb_config_filepath)
@@ -76,6 +86,7 @@ def align_stack_xy(output_path,
     if wipe_progress_flag:
         logging.info(f"Wiping progress for stack: {stack_name}")
         wipe_progress(db, stack_name)
+        overwrite=True
 
     if overwrite:
         logging.warning('Existing dataset will be deleted and aligned from scratch.')
@@ -123,11 +134,36 @@ def align_stack_xy(output_path,
     ### PROCESS STACK ###
     #####################
     step_name = 'align_xy'
-    pbar = tqdm(stack.slices, position=2, desc=f'{stack.stack_name}: Processing', leave=False)
+    
+    # Compute overlap for the first slice and for others when necessary
+    compute_overlap=True
+
+    # Render order (which tile ends up on top) is determined once on the first processed
+    # slice and reused for all subsequent slices.
+    render_order=None
+
+    # Check what is to be processed
+    if overwrite:
+        # Process everything
+        slices_to_process = stack.slices
+    else:
+        # Skip already processed
+        slices_to_process = [z for z in stack.slices
+                            if not check_progress(db, stack.stack_name, step_name, z - z_offset)]
+    
+    ignore_slices_local, ignore_slices_global = ignore_slices
+    n_skip = len(stack.slices) - len(slices_to_process)
+    if n_skip:
+        logging.info(f'{stack.stack_name}: Skipping {n_skip} already-processed slices')
+    pbar = tqdm(slices_to_process, position=2, desc=f'{stack.stack_name}: Processing', leave=False)
     for z in pbar:
-        if check_progress(db, stack.stack_name, step_name, z - z_offset) and not overwrite:
-            pbar.set_description(f'{stack.stack_name}: Skipping...')
+        if z in ignore_slices_global or z - z_offset in ignore_slices_local:
+            metadata = {
+                'slice_ignored': True
+                    }
+            log_progress(db, stack_name, step_name, z, z - z_offset, metadata)
             continue
+
         pbar.set_description(f'{stack.stack_name}: Loading tile_map...')
         tm = stack.get_tile_map(z, apply_gaussian, apply_clahe)
         tile_map = tm.tile_map
@@ -135,61 +171,88 @@ def align_stack_xy(output_path,
         metadata = {}
         if len(tile_map) > 1:
             # There are more than one tiles    
-            for scale in [0.1, 0.2, 0.5, 1]:
-                overlap = tm.estimate_overlap(scale=scale)
-                if overlap > 0:
+            for attempt in range(2):
+                ### Attempt alignment ###
+                if compute_overlap:
+                    pbar.set_description(f'{stack.stack_name}: Computing overlap...')
+                    # Compute overlap for better coarse mesh estimation
+                    for scale in [0.1, 0.2, 0.5, 1]:
+                        overlap = tm.estimate_overlap(scale=scale)
+                        if overlap > 0:
+                            break
+                    else:
+                        raise RuntimeError('No overlap found between tiles for this slice.')
+                    compute_overlap = False
+
+                pbar.set_description(f'{stack.stack_name}: Computing coarse mesh...')
+                cx, cy, coarse_mesh = get_coarse_offset(tile_map, 
+                                                        tm.tile_space,
+                                                        overlap=overlap,
+                                                        overlap_pad=80,
+                                                        overlap_cap=1000
+                                                    )
+
+                if overlap > 160:
+                    # Generally good parameters
+                    render_stride=stride
+                    patch_size = 160
+                    k0 = 0.01
+                    k = 0.1
+                    gamma = 0.5
+
+                    # Determine margin by finding the minimum displacement in X or Y between adjacent tiles
+                    # Margin is how many pixels to ignore from the tiles when rendering. Too high leaves a delimitation, too low leaves a gap
+                    min_displacement = np.abs(np.concatenate([cx[0,0,0,:][~np.isnan(cx[0,0,0,:])], 
+                                                            cy[1,0,0,:][~np.isnan(cy[1,0,0,:])]])).min()
+                    margin = min(200, int(min_displacement // 2 * 0.9))
+                else:
+                    # Parameters tested for very small overlap
+                    render_stride=10
+                    patch_size=30
+                    k0=0.07
+                    k=0.2
+                    gamma=0.5
+                    margin=10
+
+                pbar.set_description(f'{stack.stack_name}: Computing elastic mesh...')
+                meshes, _ = get_elastic_mesh(tile_map, 
+                                            cx, 
+                                            cy, 
+                                            coarse_mesh,
+                                            stride=render_stride,
+                                            patch_size=patch_size,
+                                            k0=k0,
+                                            k=k,
+                                            gamma=gamma,
+                                            batch_size=256
+                                                )
+                # Determine the render order once (on the first processed slice) and reuse it
+                # for every subsequent slice. Tiles rendered last end up on top: by default the
+                # first tiles acquired (lowest position) are on top because they are sharper,
+                # but if img_q_fun is provided the highest-quality tile is placed on top instead.
+                if render_order is None:
+                    pbar.set_description(f'{stack.stack_name}: Determining top image for first slice...')
+                    render_order = get_render_order(tile_map, tm.tile_masks, img_q_fun)
+                # Keep cached order, but stay robust to tiles missing from / new to this slice.
+                ordered_keys = [k for k in render_order if k in meshes]
+                ordered_keys += [k for k in sorted(meshes) if k not in render_order]
+                meshes = {k: meshes[k] for k in ordered_keys}
+                margin_map = get_tile_map_margins(tm.tile_space, margin)
+                                        
+                pbar.set_description(f'{stack.stack_name}: Rendering...')
+                dataset, dataset_mask, stitch_score = render_slice_xy(dataset, z-z_offset, tile_map, meshes, render_stride, tm.tile_masks,
+                                                                    parallelism=num_cores, margin_overrides=margin_map, dest_mask=dataset_mask, 
+                                                                    resize_canvas=True, min_stitch_score=min_stitch_score)
+                if np.min(stitch_score) < min_stitch_score and attempt == 0:
+                    # Stitch was not good enough, let's try again from scratch
+                    compute_overlap = True
+                elif np.min(stitch_score) < min_stitch_score and attempt > 0:
+                    raise RuntimeError(f'Stitch score too low after a second attempt ({np.min(stitch_score)}). \
+                                        Alignment could not be performed ({stack_name}: {z})')
+                else:
+                    # Stitch was good, data was written to file, let's move on
                     break
-            else:
-                raise RuntimeError('No overlap found between tiles for this slice.')
 
-            pbar.set_description(f'{stack.stack_name}: Computing elastic meshes...')
-            # Compute overlap for better coarse mesh estimation
-            overlap_pad = 80
-            cx, cy, coarse_mesh = get_coarse_offset(tile_map, 
-                                                    tm.tile_space,
-                                                    overlap=[overlap,               # try first
-                                                             overlap+overlap_pad]   # try second
-                                                   )
-
-            if overlap > 160:
-                # Generally good parameters
-                render_stride=stride
-                patch_size = 160
-                k0 = 0.01
-                k = 0.1
-                gamma = 0.5
-
-                # Determine margin by finding the minimum displacement in X or Y between adjacent tiles
-                # Margin is how many pixels to ignore from the tiles when rendering. Too high leaves a delimitation, too low leaves a gap
-                min_displacement = np.abs(np.concatenate([cx[0,0,0,:][~np.isnan(cx[0,0,0,:])], 
-                                                          cy[1,0,0,:][~np.isnan(cy[1,0,0,:])]])).min()
-                margin = min(200, int(min_displacement // 2 * 0.9))
-            else:
-                # Parameters tested for very small overlap
-                render_stride=10
-                patch_size=30
-                k0=0.07
-                k=0.2
-                gamma=0.5
-                margin=10
-            
-            meshes = get_elastic_mesh(tile_map, 
-                                      cx, 
-                                      cy, 
-                                      coarse_mesh,
-                                      stride=render_stride,
-                                      patch_size=patch_size,
-                                      k0=k0,
-                                      k=k,
-                                      gamma=gamma)
-            # Ensure that first tiles acquired are rendered last because they are sharper and should be on top
-            meshes = {k:meshes[k] for k in sorted(meshes)[::-1]}
-            margin_map = get_tile_map_margins(tm.tile_space, margin)
-                                      
-            pbar.set_description(f'{stack.stack_name}: Rendering...')
-            parallelism = min(num_cores, len(tile_map))
-            dataset, dataset_mask, stitch_score = render_slice_xy(dataset, z-z_offset, tile_map, meshes, render_stride, tm.tile_masks, 
-                                           parallelism=parallelism, margin_overrides=margin_map, dest_mask=dataset_mask, resize_canvas=True)
             metadata = {
                 'mesh_parameters':{
                                 'stride':render_stride,
@@ -202,12 +265,14 @@ def align_stack_xy(output_path,
                 'margin': margin,
                 'stitch_score': float(np.median(stitch_score)),
                 'tile_space': list(map(int, tm.tile_space)),
-                'missing_tile': tm.missing_tiles
+                'missing_tile': tm.missing_tiles,
+                'retried': attempt>0
                     }
         else:
             # There is only one tile, no need to compute anything
             pbar.set_description(f'{stack.stack_name}: Writing unique tile...')
-            dataset, dataset_mask, stitch_score = render_slice_xy(dataset, z-z_offset, tile_map, None, None, None, parallelism=1, dest_mask=dataset_mask, resize_canvas=True)
+            dataset, dataset_mask, stitch_score = render_slice_xy(dataset, z-z_offset, tile_map, None, None, None, 
+                                                                  parallelism=1, dest_mask=dataset_mask, resize_canvas=True)
             metadata = {
                 'tile_space': list(map(int, tm.tile_space)),
                 'missing_tile': tm.missing_tiles
@@ -217,7 +282,6 @@ def align_stack_xy(output_path,
             logging.warning(f'{stack.stack_name}: stitch score too low, tiles may not overlap if margin is too large (z = {z})')
 
         log_progress(db, stack_name, step_name, z, z - z_offset, metadata)
-
 
     pbar.set_description(f'{stack.stack_name}: done')
 
@@ -263,7 +327,9 @@ if __name__ == '__main__':
     apply_gaussian  = main_config['apply_gaussian']
     apply_clahe     = main_config['apply_clahe']
     stack_configs   = main_config['stack_configs']
-    
+    img_q_fun       = resolve_img_q_fun(main_config.get('img_on_top'))
+    min_stitch_score = main_config.get('min_stitch_score', 0.8)
+
     tile_maps_paths, tile_maps_invert = parse_stack_info(stack_configs[args.stack_name])
 
     align_stack_xy(output_path=output_path,
@@ -279,4 +345,6 @@ if __name__ == '__main__':
                    overwrite=args.overwrite,
                    project_name=project_name,
                    mongodb_config_filepath=mongodb_config_filepath,
-                   wipe_progress_flag=args.wipe_progress)
+                   wipe_progress_flag=args.wipe_progress,
+                   img_q_fun=img_q_fun,
+                   min_stitch_score=min_stitch_score)

@@ -21,17 +21,16 @@ os.environ['OMP_NUM_THREADS'] = '4'
 os.environ['MKL_NUM_THREADS'] = '4'
 
 import argparse
-import json
 import logging
 import numpy as np
 import sys
 
 from inspect import signature
-from typing import List, Optional
+from typing import Optional
 
 from emalign.align_z.config import load_align_plan, load_dataset_configs, validate_config_directory
 from emalign.scripts.align_stack_z import align_stack_z
-from emalign.io.store import open_store
+from emalign.io.store import open_store, set_store_attributes, get_store_attributes
 from emalign.io.progress import get_mongo_client, get_mongo_db, wipe_progress
 
 
@@ -43,6 +42,7 @@ logging.getLogger('jax._src.xla_bridge').setLevel(logging.WARNING)
 CHUNK_SIZE = [1, 1024, 1024]  # For store creation
 NUM_WORKERS = 1
 DOWNSAMPLE_SCALE = 10  # For creation of the downsampled inspection store
+Z_RESOLUTION = 50 # nm
 
 
 def load_and_validate_configs(config_dir):
@@ -101,6 +101,7 @@ def initialize_destination_stores(destination_path, align_plan, save_downsampled
     create_new = not os.path.exists(destination_path) or start_over
 
     if create_new:
+        z_off = 0 # TODO: deal with this
         logging.info(f'Creating project dataset at: \n    {destination_path}\n')
         if start_over:
             logging.info('Previous dataset will be overwritten')
@@ -112,6 +113,12 @@ def initialize_destination_stores(destination_path, align_plan, save_downsampled
         ds_bounds = align_plan['dataset_local_bounds']
         root_offset = np.array(align_plan['root_offset'])
         pad_offset = np.array(align_plan['pad_offset'])
+        bbox = align_plan['ref_global_bbox']
+        if bbox is not None:
+            y_off = bbox[0]
+            x_off = bbox[2]
+        else:
+            y_off = x_off = 0
 
         # Calculate total Z range
         max_z = 0
@@ -145,6 +152,41 @@ def initialize_destination_stores(destination_path, align_plan, save_downsampled
             ds_project_output_path, mode=open_mode, dtype=ts.uint8,
             shape=dest_shape_ds, chunks=CHUNK_SIZE
         )
+
+        # Set some attributes that may be used by downstream pipelines
+        # resolution and voxel_size are the same, just there for compatibility
+        # with different versions of daisy or funlib.persistence
+        attrs = {
+                "voxel_offset": [z_off, y_off, x_off],
+                "offset": [z_off, y_off, x_off],
+                "resolution": [
+                    Z_RESOLUTION,
+                    align_plan['yx_target_resolution'],
+                    align_plan['yx_target_resolution']
+                ],
+                "voxel_size": [
+                    Z_RESOLUTION,
+                    align_plan['yx_target_resolution'],
+                    align_plan['yx_target_resolution']
+                ]
+                }
+        set_store_attributes(destination, attrs)
+        
+        attrs = {
+                "voxel_offset": [z_off, y_off//save_downsampled, x_off//save_downsampled],
+                "offset": [z_off, y_off//save_downsampled, x_off//save_downsampled],
+                "resolution": [
+                    Z_RESOLUTION,
+                    align_plan['yx_target_resolution']*save_downsampled,
+                    align_plan['yx_target_resolution']*save_downsampled
+                ],
+                "voxel_size": [
+                    Z_RESOLUTION,
+                    align_plan['yx_target_resolution']*save_downsampled,
+                    align_plan['yx_target_resolution']*save_downsampled
+                ]
+                }
+        set_store_attributes(ds_destination, attrs)
     else:
         logging.info(f'Opening existing project dataset at: \n    {destination_path}\n')
         import tensorstore as ts
@@ -157,7 +199,7 @@ def initialize_destination_stores(destination_path, align_plan, save_downsampled
     return destination, destination_mask, ds_destination, ds_project_output_path
 
 
-def execute_alignment(paths, dataset_configs, root_stack, num_workers, wipe_progress_stack):
+def execute_alignment(paths, dataset_configs, root_stack, num_workers, wipe_progress_stacks):
     '''Execute the alignment for all datasets.
 
     Args:
@@ -165,7 +207,7 @@ def execute_alignment(paths, dataset_configs, root_stack, num_workers, wipe_prog
         dataset_configs: Dictionary of dataset_name -> config
         root_stack: Name of the root stack
         num_workers: Number of worker threads
-        wipe_progress_stack: Optional stack name to wipe progress for
+        wipe_progress_stacks: Optional stack name to wipe progress for
     '''
     for i, path in enumerate(paths):
         for dataset_name in path:
@@ -179,7 +221,7 @@ def execute_alignment(paths, dataset_configs, root_stack, num_workers, wipe_prog
                     f'First dataset ({dataset_name}) of the path is not the root stack ({root_stack})'
 
             config['num_workers'] = num_workers
-            config['wipe_progress_flag'] = (dataset_name == wipe_progress_stack)
+            config['wipe_progress_flag'] = any([dataset_name == s for s in wipe_progress_stacks])
 
             # Start alignment
             try:
@@ -201,7 +243,7 @@ def align_dataset_z(project_dir: str,
                     num_workers: int = NUM_WORKERS,
                     save_downsampled: float = DOWNSAMPLE_SCALE,
                     start_over: bool = False,
-                    wipe_progress_stack: Optional[str] = None) -> None:
+                    wipe_progress_stacks: Optional[list[str]] = None) -> None:
     '''Execute Z alignment using pre-generated configuration files.
 
     Args:
@@ -209,7 +251,7 @@ def align_dataset_z(project_dir: str,
         num_workers: Number of worker threads
         save_downsampled: Downsampling factor for inspection store
         start_over: Wipe all progress and restart
-        wipe_progress_stack: Specific stack to wipe progress for
+        wipe_progress_stacks: List of specific stacks to wipe progress for
     '''
     config_dir = os.path.join(project_dir, 'config/z_config')
     if not os.path.exists(config_dir) or not os.listdir(config_dir):
@@ -243,13 +285,18 @@ def align_dataset_z(project_dir: str,
         # Wipe progress for all datasets
         first_config = next(iter(dataset_configs.values()))
         mongodb_config_filepath = first_config.get('mongodb_config_filepath')
-
-        if mongodb_config_filepath:
-            client = get_mongo_client(mongodb_config_filepath)
-            db = get_mongo_db(client, project_name)
-            for dataset_name in dataset_configs:
-                wipe_progress(db, dataset_name)
-                logging.info(f'Wiped progress for {dataset_name}')
+    
+        client = get_mongo_client(mongodb_config_filepath)
+        db = get_mongo_db(client, project_name)
+        wipe_progress_stacks = []
+        steps = ['flow_z', 'mesh_relax_z', 'render_z']
+        for dataset_name in dataset_configs:
+            for step in steps:
+                wipe_progress(db, dataset_name, step_name=step) # database progress
+            attrs = get_store_attributes(dataset_configs[dataset_name]['dataset_path'])
+            attrs['z_aligned'] = False # attribute flag when data has been processed
+            set_store_attributes(dataset_configs[dataset_name]['dataset_path'], attrs)
+            logging.info(f'Wiped progress for {dataset_name}')
 
     # Initialize destination stores
     destination, destination_mask, ds_destination, ds_project_output_path = \
@@ -259,7 +306,8 @@ def align_dataset_z(project_dir: str,
 
     # Execute alignment
     logging.info('Starting Z alignment...')
-    execute_alignment(paths, dataset_configs, root_stack, num_workers, wipe_progress_stack)
+    logging.info(f'Number of cores used for rendering: {num_workers}')
+    execute_alignment(paths, dataset_configs, root_stack, num_workers, wipe_progress_stacks)
 
     logging.info('Done!')
     logging.info(f'Output: {destination_path}')
@@ -288,7 +336,7 @@ if __name__ == '__main__':
                         dest='num_workers',
                         type=int,
                         default=NUM_WORKERS,
-                        help=f'Number of threads to use. Default: {NUM_WORKERS}')
+                        help=f'Number of threads to use for rendering. Default: {NUM_WORKERS}')
     parser.add_argument('-ds', '--downsample-scale',
                         metavar='SCALE',
                         dest='save_downsampled',
@@ -301,10 +349,11 @@ if __name__ == '__main__':
                         action='store_true',
                         help='Wipe all progress and restart')
     parser.add_argument('--wipe-progress',
-                        dest='wipe_progress_stack',
+                        dest='wipe_progress_stacks',
                         type=str,
-                        default=None,
-                        help='Wipe progress for a specific stack before starting')
+                        nargs='+',
+                        default=[''],
+                        help='Wipe progress for one or more specific stack(s) before starting')
 
     args = parser.parse_args()
 
@@ -322,5 +371,5 @@ if __name__ == '__main__':
         num_workers=args.num_workers,
         save_downsampled=args.save_downsampled,
         start_over=args.start_over,
-        wipe_progress_stack=args.wipe_progress_stack
+        wipe_progress_stacks=args.wipe_progress_stacks
     )

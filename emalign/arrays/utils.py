@@ -1,8 +1,6 @@
 import cv2
 import numpy as np
 
-from emalign.io.process.mask import mask_to_bbox
-
 def resample(array, ratio):
     '''
     Resize an array by a scaling ratio using OpenCV interpolation.
@@ -39,10 +37,34 @@ def resample(array, ratio):
 
     if array.dtype == bool:
         # cv2.resize doesn't want boolean
-        array = cv2.resize(array.astype(np.uint8), None, fx=ratio, fy=ratio).astype(bool)
+        array = cv2.resize(array.astype(np.uint8), None, fx=ratio, fy=ratio, interpolation=cv2.INTER_NEAREST).astype(bool)
     else:
         array = cv2.resize(array, None, fx=ratio, fy=ratio)
     return array
+
+
+def transform_bbox(bbox, M, offset=[0,0], dilate=0): 
+    y1,y2,x1,x2 = bbox
+    corners = np.array([
+        [x1, y1],  # top-left
+        [x2, y1],  # top-right
+        [x2, y2],  # bottom-right
+        [x1, y2]   # bottom-left
+    ])
+
+    # cv2.transform expects shape (N, 1, 2)
+    corners_reshaped = corners.reshape(-1, 1, 2)
+    transformed_corners = cv2.transform(corners_reshaped, M)
+    transformed_corners = transformed_corners.reshape(-1, 2)
+    transformed_corners += np.array(offset).astype(int)
+
+    # Return bbox and dilate if necessary
+    x1 = max(0, int(np.floor(transformed_corners[:, 0].min())) - dilate)
+    y1 = max(0, int(np.floor(transformed_corners[:, 1].min())) - dilate)
+    x2 = max(0, int(np.ceil(transformed_corners[:, 0].max())) + dilate)
+    y2 = max(0, int(np.ceil(transformed_corners[:, 1].max())) + dilate)
+    return y1, y2, x1, x2
+
 
 # PAD
 def xy_offset_to_pad(offset):
@@ -209,6 +231,9 @@ def compute_laplacian_var(arr, mask=None):
     - Commonly used for autofocus and blur detection
     - Optimized: Crops to mask bounding box before filtering to reduce computation
     '''
+    
+    from emalign.io.process.mask import mask_to_bbox
+
     if mask is None:
         l = cv2.Laplacian(arr, cv2.CV_64F)
         return np.var(l)
@@ -216,10 +241,10 @@ def compute_laplacian_var(arr, mask=None):
     # cv2 needs 2D array so masking needs to happen after computation
     # Crop to relevant bbox to limit computations
     ymin, ymax, xmin, xmax = mask_to_bbox(mask)
-    arr_crop = arr[ymin:ymax+1, xmin:xmax+1]
-    mask_crop = mask[ymin:ymax+1, xmin:xmax+1]
+    arr_crop = arr[ymin:ymax, xmin:xmax]
+    mask_crop = mask[ymin:ymax, xmin:xmax]
 
-    l = cv2.Laplacian(arr_crop, cv2.CV_64F)[mask_crop]
+    l = cv2.Laplacian(arr_crop, cv2.CV_64F)[mask_crop.astype(bool)]
     return np.var(l)
 
 
@@ -255,15 +280,17 @@ def compute_sobel_mean(arr, mask=None):
         sobel_y = cv2.Sobel(arr, cv2.CV_64F, 0, 1, ksize=5)
         sobel = np.sqrt(sobel_x**2 + sobel_y**2)
         return np.mean(sobel)
+    
+    from emalign.io.process.mask import mask_to_bbox
 
     # cv2 needs 2D array so masking needs to happen after computation
     # Crop to relevant bbox to limit computations
     ymin, ymax, xmin, xmax = mask_to_bbox(mask)
-    arr_crop = arr[ymin:ymax+1, xmin:xmax+1]
-    mask_crop = mask[ymin:ymax+1, xmin:xmax+1]
+    arr_crop = arr[ymin:ymax, xmin:xmax]
+    mask_crop = mask[ymin:ymax, xmin:xmax]
 
-    sobel_x = cv2.Sobel(arr_crop, cv2.CV_64F, 1, 0, ksize=5)[mask_crop]
-    sobel_y = cv2.Sobel(arr_crop, cv2.CV_64F, 0, 1, ksize=5)[mask_crop]
+    sobel_x = cv2.Sobel(arr_crop, cv2.CV_64F, 1, 0, ksize=5)[mask_crop.astype(bool)]
+    sobel_y = cv2.Sobel(arr_crop, cv2.CV_64F, 0, 1, ksize=5)[mask_crop.astype(bool)]
     sobel = np.sqrt(sobel_x**2 + sobel_y**2)
     return np.mean(sobel)
 
@@ -300,15 +327,17 @@ def compute_grad_mag(arr, mask=None):
         gy, gx = np.gradient(arr)
         gnorm = np.sqrt(gx**2 + gy**2)
         return np.average(gnorm)
-
+    
+    from emalign.io.process.mask import mask_to_bbox
+    
     # cv2 needs 2D array so masking needs to happen after computation
     # Crop to relevant bbox to limit computations
     ymin, ymax, xmin, xmax = mask_to_bbox(mask)
-    arr_crop = arr[ymin:ymax+1, xmin:xmax+1]
-    mask_crop = mask[ymin:ymax+1, xmin:xmax+1]
+    arr_crop = arr[ymin:ymax, xmin:xmax]
+    mask_crop = mask[ymin:ymax, xmin:xmax]
 
     gy, gx = np.gradient(arr_crop)
-    gnorm = np.sqrt(gx**2 + gy**2)[mask_crop]
+    gnorm = np.sqrt(gx**2 + gy**2)[mask_crop.astype(bool)]
     return np.average(gnorm)
 
 

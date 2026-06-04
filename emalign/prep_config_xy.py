@@ -11,30 +11,29 @@ warnings.filterwarnings("ignore", category=RuntimeWarning, message="os.fork() wa
 import argparse
 import json
 import logging
-import numpy as np
-import pandas as pd
 import sys
 
-from emalign.align_xy.prep import find_offset_from_main_config, get_stacks, check_stacks_to_invert
+from emalign.align_xy.prep import get_stacks, check_stacks_to_invert
+from emalign.arrays.stacks import Stack
 from emalign.io.backend import get_io_backend
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger('absl').setLevel(logging.WARNING)
 logging.getLogger('jax._src.xla_bridge').setLevel(logging.WARNING)
 
+# Constants
+NUM_WORKERS = 1
 
-def prep_align_stacks(main_dir,
+def prep_align_stacks(input_dirs,
                       project_dir,
                       output_name,
                       dir_pattern,
                       resolution,
                       offset,
                       stride,
-                      overlap,
                       scale,
                       apply_gaussian,
                       apply_clahe,
-                      prev_cfg,
                       num_workers,
                       port,
                       io_mode='volumescope',
@@ -58,31 +57,71 @@ def prep_align_stacks(main_dir,
             logging.info('Overwriting existing config')
 
     # Create output path
-    output_name = output_name if output_name.endswith('.zarr') else output_name.rstrip('. ') + '.zarr'
-    output_path = os.path.join(project_dir, output_name)
-
-    # Determine the offset from a previous dataset that this one relates to
-    if prev_cfg is not None:
-        offset[0] = find_offset_from_main_config(prev_cfg)
-        logging.info(f'Determined z offset from previous dataset: {offset[0]}')
+    if output_name is None:
+        # Use same name as project_dir
+        output_name = os.path.basename(project_dir)
+    output_zarr = output_name if output_name.endswith('.zarr') else output_name.rstrip('. ') + '.zarr'
+    output_path = os.path.join(project_dir, output_zarr)
 
     # Find tilesets with desired resolution
-    logging.info(f'Looking for tilesets in: {main_dir}')
-    stack_paths = io_backend.get_tilesets(main_dir, resolution, dir_pattern, num_workers)
+    if len(resolution) == 1:
+        resolution = resolution * 2
+    elif len(resolution) > 2:
+        raise ValueError(f'Please provide a 2D resolution. Resolution provided: {resolution}')
 
-    logging.info(f'Found {len(stack_paths)} directories corresponding to resolution {resolution}: ')
-    for s in stack_paths:
-        logging.info(f'    {s}')
+    if len(input_dirs) > 1:
+        logging.info(f'Multiple input directories were provided ({len(input_dirs)}).')
+        logging.info('Stacks will be concatenated along Z in the order provided: each '
+                     'directory is offset by the last slice index of the previous one.')
 
-    if not stack_paths:
-        logging.error(f'No directory corresponding to the query was found at {main_dir}')
-        sys.exit(1)
+    # Find tilesets in every input directory and compute a per-stack Z offset so that
+    # stacks from a directory follow those of the previous directory along Z.
+    stack_paths = []
+    offsets = []
+    seen_names = {}  # stack name -> source path, used to catch duplicate names across directories
+    z_cursor = 0
+    for input_dir in input_dirs:
+        logging.info(f'Looking for tilesets in: {input_dir}')
+        dir_stack_paths = io_backend.get_tilesets(input_dir, resolution, dir_pattern, num_workers)
+
+        logging.info(f'Found {len(dir_stack_paths)} directories corresponding to resolution {resolution}: ')
+        for s in dir_stack_paths:
+            logging.info(f'    {s}')
+
+        if not dir_stack_paths:
+            logging.error(f'No directory corresponding to the query was found at {input_dir}')
+            sys.exit(1)
+
+        # Every stack from this directory shares the same Z offset (the cumulative last
+        # slice index of all previous directories). Track this directory's last slice so
+        # the next directory can be placed right after it.
+        dir_last_slice = 0
+        for s in dir_stack_paths:
+            stack = Stack(s, io_backend=io_backend)
+            stack._get_tilemaps_paths()
+
+            # Stack names are used as keys for invert instructions and config files, so
+            # the same name appearing in two directories would silently collide (a single
+            # invert decision shared by both, only one prompted). Refuse it explicitly.
+            if stack.stack_name in seen_names:
+                logging.error(f'Duplicate stack name "{stack.stack_name}" found in:')
+                logging.error(f'    {seen_names[stack.stack_name]}')
+                logging.error(f'    {s}')
+                raise ValueError(f'Stack name "{stack.stack_name}" is not unique across input '
+                                 f'directories. Rename one of the directories so every stack has a unique name.')
+            seen_names[stack.stack_name] = s
+
+            dir_last_slice = max(dir_last_slice, stack.slices[-1])
+            stack_paths.append(s)
+            offsets.append(z_cursor)
+
+        z_cursor += dir_last_slice
 
     # Invert stack?
     logging.info('Please check whether to invert stacks')
     invert_instructions = check_stacks_to_invert(stack_paths, num_workers, bind_port=port)
 
-    stacks = get_stacks(stack_paths, invert_instructions, io_backend=io_backend)
+    stacks = get_stacks(stack_paths, invert_instructions, io_backend=io_backend, offsets=offsets)
 
     # Look for overlapping stacks
     combined_stacks = {k:v for k,v in stacks.items() if isinstance(v, list)}
@@ -109,6 +148,9 @@ def prep_align_stacks(main_dir,
                         'z_end': stack.slices[-1],
                         'tile_maps': json_tile_maps,
                         'tile_maps_invert': {str(k):v for k,v in stack.tile_maps_invert.items()},
+                        # placeholders for users to add slices that they want ignored
+                        'ignore_slices_local': [], # local indices (starting at 0)
+                        'ignore_slices_global': [] # global indices (starting at z_start for that dataset)
                         }
         config_path = os.path.join(config_dir, 'xy_' + stack.stack_name + '.json')
         config_paths.update({stack.stack_name: os.path.abspath(config_path)})      
@@ -126,6 +168,9 @@ def prep_align_stacks(main_dir,
                         'z_end': stack.slices[-1],
                         'tile_maps': json_tile_maps,
                         'tile_maps_invert': {str(k):v for k,v in stack.tile_maps_invert.items()},
+                        # placeholders for users to add slices that they want ignored
+                        'ignore_slices_local': [], # local indices (starting at 0)
+                        'ignore_slices_global': [] # global indices (starting at z_start for that dataset)
                         }
         config_path = os.path.join(config_dir, 'xy_' + stack.stack_name + '.json')
         config_paths.update({stack.stack_name: os.path.abspath(config_path)})
@@ -138,7 +183,7 @@ def prep_align_stacks(main_dir,
 
     main_config = {
                 'project_name': project_name,
-                'main_dir': os.path.abspath(main_dir),
+                'input_dirs': [os.path.abspath(d) for d in input_dirs],
                 'stack_configs': config_paths,
                 'tilesets_combined': len(combined_stacks),
                 'resolution': resolution,
@@ -146,7 +191,6 @@ def prep_align_stacks(main_dir,
                 'output_path': os.path.abspath(output_path),
                 'scale': scale,
                 'stride': stride,
-                'overlap': overlap,
                 'apply_gaussian': apply_gaussian,
                 'apply_clahe': apply_clahe,
                 'io_mode': io_mode
@@ -158,37 +202,41 @@ def prep_align_stacks(main_dir,
 
 if __name__ == '__main__':
 
-
     parser=argparse.ArgumentParser('Script aligning tiles in XY based on SOFIMA (Scalable Optical Flow-based Image Montaging and Alignment). \n\
                                     This script was written to match the file structure produced by the ThermoFisher MAPs software.')
-    parser.add_argument('-i', '--input_dir',
-                        metavar='MAIN_DIR',
-                        dest='main_dir',
-                        required=True,
-                        type=str,
-                        help='Path to the directory containing tilesets. \n \
-                              This directory contains subdirectories themselves containing the tiles to align. \n \
-                              Subdirectories are expected to contain tif and info files.')
-    parser.add_argument('-o', '--output_zarr',
-                        metavar='OUT_ZARR',
-                        dest='output_name',
-                        required=True,
-                        type=str,
-                        help='Name for the zarr container that will contain stitched files. Will be written in project_dir.')
+    
+    # Required arguments
     parser.add_argument('-p', '--project-dir',
                         metavar='PROJECT_DIR',
                         dest='project_dir',
                         required=True,
                         type=str,
                         help='Directory where the config will be written.')
+    parser.add_argument('-i', '--input_dir',
+                        metavar='MAIN_DIR',
+                        dest='input_dirs',
+                        required=True,
+                        type=str,
+                        nargs='+',
+                        help='Path(s) to the directory(ies) containing image data. Directory structure should match that required by the --mode flag. '
+                             'If multiple directories are provided, their stacks are concatenated along Z in the order given, '
+                             'each directory being offset by the last slice index of the previous one.')
     parser.add_argument('-r', '--resolution',
                         metavar='RESOLUTION',
                         dest='resolution',
                         required=True,
                         type=int,
-                        nargs=2,
+                        nargs='+',
                         default=None,
                         help='XY resolution to align. Will look into the info file of each directory to find the tileset with the wanted resolution.')
+    
+    # Optional arguments
+    parser.add_argument('-o', '--output_name',
+                        metavar='OUT_NAME',
+                        dest='output_name',
+                        default=None,
+                        type=str,
+                        help='Name for the zarr container that will contain stitched files. Will be written in project_dir. Default: same as project_dir name')
     parser.add_argument('--offset',
                         metavar='OFFSET',
                         dest='offset',
@@ -197,18 +245,12 @@ if __name__ == '__main__':
                         nargs=3,
                         default=[0,0,0],
                         help='ZYX pixel offset for the final volume. Default: [0,0,0]')
-    parser.add_argument('--overlap',
-                        metavar='OVERLAP',
-                        dest='overlap',
-                        type=int,
-                        default=500,
-                        help='Size of the overlapping region in pixels, or in size ratio. Default: 500')
     parser.add_argument('-c', '--cores',
                         metavar='CORES',
                         dest='num_workers',
                         type=int,
-                        default=None,
-                        help='Number of cores to use for multiprocessing and multithreading. Default: 0 (all cores available)')
+                        default=NUM_WORKERS,
+                        help=f'Number of cores to use for loading test images. Default: {NUM_WORKERS}')
     parser.add_argument('--stride',
                         metavar='STRIDE',
                         dest='stride',
@@ -236,33 +278,27 @@ if __name__ == '__main__':
     parser.add_argument('--dir-pattern',
                         metavar='DIR_PATTERN',
                         dest='dir_pattern',
-                        nargs=1,
+                        nargs='+',
                         default=[''],
                         type=str,
-                        help='Pattern to match for subdirectories to process. Default to no pattern')
+                        help='Pattern(s) to match for subdirectories to process. Default: no pattern, all subdirectories are processed')
     parser.add_argument('--port',
                         metavar='PORT',
                         dest='port',
                         type=int,
-                        default=33333,
+                        default=55555,
                         help='Port used by neuroglancer')
-    parser.add_argument('--prev-cfg',
-                        metavar='PREV_CFG',
-                        dest='prev_cfg',
-                        default=None,
-                        type=str,
-                        help='Path to the main_config of a previous part of the dataset. If provided, the z offset will be determined from the previous dataset.')
     parser.add_argument('--project-name',
                         metavar='PROJECT_NAME',
                         dest='project_name',
                         default=None,
                         type=str,
-                        help='Project name. If not provided, will prompt interactively.')
+                        help='Project name. Default: user is prompted for a name')
     parser.add_argument('--force-overwrite',
                         dest='force_overwrite',
                         action='store_true',
                         default=False,
-                        help='Force overwrite of existing config files without prompting.')
+                        help='Force overwrite of existing config files. Default: user is prompted if configs exist')
     parser.add_argument('--mode',
                         metavar='MODE',
                         dest='io_mode',

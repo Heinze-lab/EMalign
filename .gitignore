@@ -1,5 +1,4 @@
 notebooks/
-config/
 __pycache__/
 build/
 tutorial/raw_data_earwig/

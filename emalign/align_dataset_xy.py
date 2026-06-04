@@ -20,6 +20,7 @@ import sys
 from tqdm import tqdm
 
 from emalign.arrays.stacks import parse_stack_info
+from emalign.align_xy.render import resolve_img_q_fun
 from emalign.scripts.align_stack_xy import align_stack_xy
 
 
@@ -27,11 +28,13 @@ logging.basicConfig(level=logging.INFO)
 logging.getLogger('absl').setLevel(logging.WARNING)
 logging.getLogger('jax._src.xla_bridge').setLevel(logging.WARNING)
 
+# Constants
+NUM_WORKERS = 1
 
 def align_dataset_xy(config_path,
                      num_workers,
                      overwrite=False,
-                     wipe_progress_stack=None):
+                     wipe_progress_stacks=None):
     '''Align and stitch in XY consecutive image stacks defined by a configuration file.
 
     Image stacks will be aligned one by one based on paths and parameters defined in a configuration file.
@@ -43,7 +46,7 @@ def align_dataset_xy(config_path,
             See documentation for how to format the configuration file (work in progress).
         num_workers (int): Number of threads to use for multiprocessing when relevant.
         overwrite (bool): Whether to overwrite dataset. If True, will delete existing dataset and start over. If False, will check for progress and skip processed slices. Defaults to False.
-        wipe_progress_stack (str, optional): Name of the stack to wipe progress for. Defaults to None.
+        wipe_progress_stacks (str, optional): Name of the stack to wipe progress for. Defaults to None.
     '''
     
     with open(config_path, 'r') as f:
@@ -54,7 +57,7 @@ def align_dataset_xy(config_path,
         project_name = os.path.basename(main_config['output_path']).rstrip('.zarr')
     mongodb_config_filepath = main_config.get('mongodb_config_filepath')
 
-    main_dir        = main_config['main_dir']
+    main_dir        = main_config['input_dirs']
     output_path     = main_config['output_path']
     resolution      = main_config['resolution']
     offset          = main_config['offset']
@@ -63,6 +66,10 @@ def align_dataset_xy(config_path,
     apply_clahe     = main_config['apply_clahe']
     stack_configs   = main_config['stack_configs']
     io_mode         = main_config['io_mode']
+    # Optional: which tile is rendered on top. See resolve_img_q_fun for accepted values.
+    img_q_fun       = resolve_img_q_fun(main_config.get('img_on_top', 'laplacian'))
+    # Optional: minimum acceptable stitch score (0 to 1) for a slice to be written.
+    min_stitch_score = main_config.get('min_stitch_score', 0.8)
 
     if not output_path.endswith('.zarr'):
         raise RuntimeError('Output path must be a zarr container (.zarr)')
@@ -82,8 +89,8 @@ def align_dataset_xy(config_path,
                                                 position=1, 
                                                 desc='Processing stacks', 
                                                 leave=True):
-        tile_maps_paths, tile_maps_invert = parse_stack_info(stack_config_path)
-        wipe_this_stack = (stack_name == wipe_progress_stack)
+        tile_maps_paths, tile_maps_invert, ignore_slices = parse_stack_info(stack_config_path)
+        wipe_this_stack = (stack_name in wipe_progress_stacks)
         align_stack_xy(output_path=output_path,
                        stack_name=stack_name,
                        tile_maps_paths=tile_maps_paths,
@@ -95,10 +102,13 @@ def align_dataset_xy(config_path,
                        apply_clahe=apply_clahe,
                        project_name=project_name,
                        io_mode=io_mode,
+                       ignore_slices=ignore_slices,
                        mongodb_config_filepath=mongodb_config_filepath,
                        num_cores=num_workers,
                        overwrite=overwrite,
-                       wipe_progress_flag=wipe_this_stack)
+                       wipe_progress_flag=wipe_this_stack,
+                       img_q_fun=img_q_fun,
+                       min_stitch_score=min_stitch_score)
     logging.info(f'Done! Output can be found at: {output_path}')
     
 
@@ -107,23 +117,28 @@ if __name__ == '__main__':
 
     parser=argparse.ArgumentParser('Script aligning tiles in XY based on SOFIMA (Scalable Optical Flow-based Image Montaging and Alignment). \n\
                                     This script was written to match the file structure produced by the ThermoFisher MAPs software.')
+    
+    # Required arguments
     parser.add_argument('-cfg', '--config',
                         metavar='CONFIG_PATH',
                         dest='config_path',
                         required=True,
                         type=str,
                         help='Path to the main task config.')
+    
+    # Optional arguments
     parser.add_argument('-c', '--cores',
                         metavar='CORES',
                         dest='num_workers',
                         type=int,
-                        default=1,
-                        help='Number of threads to use for processing. Default: 1')
+                        default=NUM_WORKERS,
+                        help=f'Number of threads to use. Default: {NUM_WORKERS}')
     parser.add_argument('--overwrite', action='store_true', help='Overwrite existing dataset.')
     parser.add_argument('--wipe-progress',
-                        dest='wipe_progress_stack',
+                        dest='wipe_progress_stacks',
                         type=str,
-                        default=None,
+                        nargs='+',
+                        default=[''],
                         help='Wipe progress for a specific stack before starting.')
     args=parser.parse_args()
 

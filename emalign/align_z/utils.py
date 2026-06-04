@@ -3,6 +3,7 @@
 import json
 from emalign.arrays.utils import resample
 from emalign.io.store import find_ref_slice, open_store
+import logging
 import networkx as nx
 import numpy as np
 import os
@@ -11,9 +12,9 @@ import pandas as pd
 
 from cv2 import warpAffine
 from glob import glob
+from tqdm import tqdm
 
-from emalign.io.store import get_store_attributes
-
+from ..io.store import get_store_attributes
 from ..arrays.sift import estimate_transform_sift
 
 
@@ -54,7 +55,7 @@ def get_ordered_datasets(config_paths, exclude=[]):
 
             for ds in dataset_paths:
                 check = [pattern in ds for pattern in exclude]
-                if any(check) or ds.endswith('_mask'):
+                if any(check) or os.path.abspath(ds).endswith('_mask'):
                     # Always exclude masks from query
                     continue
                 dataset = open_store(ds, mode='r')
@@ -214,7 +215,7 @@ def compute_alignment_path(datasets,
     if len(root_datasets) == 0:
         raise RuntimeError('No potential root dataset was found: no dataset with no overlap along Z.')
 
-    root_node_idx = root_datasets[0][0]
+    root_node_idx = root_datasets.iloc[0][0]
     root_node = os.path.basename(os.path.abspath(datasets_nomask[root_node_idx].kvstore.path))
 
     # Compute valid alignment paths
@@ -227,10 +228,13 @@ def compute_alignment_path(datasets,
         next_group = grouped.get_group(g+1)
         for u in curr_group.ds_indices.iloc[0]:
             for v in next_group.ds_indices.iloc[0]:
+                if u == v:
+                    continue  # same dataset spans both groups — no inter-dataset transition needed
                 # Check for match at the boundary of the relevant range
                 ref = _get_slice(datasets_nomask[u], curr_group.z.max() - z_offsets[u, 0], reverse=True)
                 mov = _get_slice(datasets_nomask[v], next_group.z.min() - z_offsets[v, 0], reverse=False)
-                M, out_shape, ref_offset, valid_estimate, _ = estimate_transform_sift(ref.copy(), mov.copy(), scale=scale, refine_estimate=True)
+                M, out_shape, ref_offset, valid_estimate, _ = estimate_transform_sift(ref.copy(), mov.copy(),
+                                                                                      scale=scale, refine_estimate=True)
 
                 if valid_estimate:
                     # Keep track of everything, mostly for debugging
@@ -242,6 +246,13 @@ def compute_alignment_path(datasets,
         raise RuntimeError(f'Some datasets are isolated: \n{x}')
 
     paths = extract_paths_from_root(G, root_node_idx)
+    if not paths:
+        # Root is the only effective dataset after graph construction (e.g. all others were
+        # filtered as fused sub-datasets).  Treat it as a single-stack project.
+        logging.warning(f'No alignment paths found from root "{root_node}"; treating it as the sole dataset.')
+        ds_bounds = {root_node: (0, datasets_nomask[root_node_idx].shape[0])}
+        return root_node, [[root_node]], [False], ds_bounds
+
     reverse_z = [bool(z_offsets[p[0], 0] > z_offsets[p[-1], 0]) for p in paths]
     paths = [[os.path.basename(os.path.abspath(datasets_nomask[i].kvstore.path)) for i in p] for p in paths]
 
@@ -273,6 +284,11 @@ def determine_initial_offset(datasets, paths):
         datasets = {os.path.basename(os.path.abspath(d.kvstore.path)): d for d in datasets}
     
     global_offset = np.array([0,0])
+    pbar = tqdm(position=0,
+                desc='Computing global offset without reference',
+                dynamic_ncols=True,
+                leave=True,
+                total=sum([len(p) for p in paths]))
     for path in paths:
         path_offset = np.array([0,0])
 
@@ -287,5 +303,73 @@ def determine_initial_offset(datasets, paths):
             path_offset += prev_offset
         
         global_offset = np.min([global_offset, path_offset], axis=0)
+        pbar.update(1)
     
     return np.abs(global_offset)
+
+
+def determine_initial_offset_ref(datasets, z_offsets, reference_path, reference_offset, yx_target_resolution):
+
+    from .align_z import PAD_OVERLAP
+    from ..arrays.overlap import get_overlap_ref
+    # Verify that each dataset overlaps the reference and derive the canvas size
+    # from the maximum warped extent across all datasets.
+    reference = open_store(reference_path, mode='r', dtype=ts.uint8)
+    ref_resolution = get_store_attributes(reference)['resolution']
+
+    dataset_names = []
+    global_offset = np.array([0,0])
+    ref_bboxes = []
+    
+    for i, dataset in tqdm(enumerate(datasets),
+                           position=0,
+                           desc='Computing global offset with reference',
+                           dynamic_ncols=True,
+                           leave=True,
+                           total=len(datasets)):
+        z_offset_val = int(z_offsets[i, 0])
+        dataset_name = os.path.basename(os.path.abspath(dataset.kvstore.path))
+        dataset_names.append(dataset_name)
+
+        # Get reference image and resample it to the dataset resolution
+        ref_scale = ref_resolution[-1] / yx_target_resolution
+        ref_img, ref_z = find_ref_slice(reference, z_offset_val + reference_offset)
+        ref_img = resample(ref_img, ref_scale)
+
+        reference_mask_path = os.path.abspath(reference.kvstore.path) + '_mask'
+        if os.path.exists(reference_mask_path):
+            reference_mask = open_store(reference_mask_path, 'r')
+            ref_mask = reference_mask[ref_z].read().result()
+            ref_mask = resample(ref_mask, ref_scale)
+        else:
+            ref_mask = None
+
+        # Get test image and mask
+        resolution = get_store_attributes(dataset)['resolution']
+        target_scale = resolution[-1] / yx_target_resolution
+        z_ds = dataset.domain.inclusive_min[0]
+        test_img = dataset[z_ds].read().result()
+        test_img = resample(test_img, target_scale)
+        dataset_mask = open_store(os.path.abspath(dataset.kvstore.path) + '_mask', 'r')
+        if dataset_mask is not None:
+            test_mask = dataset_mask[z_ds].read().result()
+            test_mask = resample(test_mask, target_scale)
+        else:
+            test_mask = None
+        
+        # Test overlap by computing the bounding box
+        _, _, bbox_ref, sift_res = get_overlap_ref(ref_img, 
+                                                    test_img, 
+                                                    ref_mask=ref_mask, 
+                                                    mov_mask=test_mask,
+                                                    bbox_ref=None,
+                                                    pad_overlap=PAD_OVERLAP,
+                                                    return_sift=True)
+        _, _, xy_offset, valid_estimate, _ = sift_res
+        if not valid_estimate:
+            raise RuntimeError(
+                f'Overlap with reference dataset could not be found for dataset: {dataset.kvstore.path}')
+        global_offset = np.min([global_offset, np.abs(xy_offset[::-1])], axis=0)  
+        ref_bboxes.append(bbox_ref)
+
+    return np.abs(global_offset), ref_bboxes
