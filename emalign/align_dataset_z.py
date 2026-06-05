@@ -158,7 +158,11 @@ def initialize_destination_stores(destination_path, align_plan, save_downsampled
         # with different versions of daisy or funlib.persistence
         attrs = {
                 "voxel_offset": [z_off, y_off, x_off],
-                "offset": [z_off, y_off, x_off],
+                "offset": [
+                           z_off*Z_RESOLUTION, 
+                           y_off*align_plan['yx_target_resolution'], 
+                           x_off*align_plan['yx_target_resolution']
+                          ],
                 "resolution": [
                     Z_RESOLUTION,
                     align_plan['yx_target_resolution'],
