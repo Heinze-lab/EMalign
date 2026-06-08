@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from PIL import Image
 from tqdm.asyncio import tqdm
 
-from emalign.utils.io import get_dataset_attributes
+from emalign.io.store import get_store_attributes
 
 
 logging.basicConfig(level=logging.INFO)
@@ -462,7 +462,7 @@ def dataset_to_pyramid(dataset_path: str,
     resolution = [1, 1, 1]
     voxel_offset = [slice_range[0], 0, 0] # We started at index zero so Z offset is the start of range
     try:
-        attrs = get_dataset_attributes(dataset_sync)
+        attrs = get_store_attributes(dataset_sync)
         resolution = attrs.get('resolution', resolution)[::-1]
         voxel_offset = attrs.get('voxel_offset', voxel_offset)[::-1]
     except FileNotFoundError:
