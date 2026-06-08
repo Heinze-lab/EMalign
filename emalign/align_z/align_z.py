@@ -134,6 +134,7 @@ def _compute_flow(dataset,
                   ref_scale=1,
                   transformations=None,
                   bbox_ref=None,
+                  bbox_anchor=None,
                   z_offset=0):
     
     original_shape = dataset.shape if original_shape is None else original_shape
@@ -149,12 +150,22 @@ def _compute_flow(dataset,
         destination_path = os.path.dirname(dataset_path)
         while not destination_path.endswith('.zarr'):
             destination_path = os.path.dirname(destination_path)
-    
+     
     if reference_dataset is None:
         # Align to self if no reference is provided
         reference_dataset = dataset
         reference_dataset_mask = dataset_mask
+
+        # Determine bounding box containing the data to align
+        # If the reference is the current dataset, then the bbox is just its shape
+        bbox_ref = [0, reference_dataset.shape[1], 0, reference_dataset.shape[2]] if bbox_ref is None else bbox_ref
+        if ref_slice is None:
+            # Very first dataset, no external image, bbox_anchor is the same
+            # Otherwise, the first slice may be external and a different bounding box
+            bbox_anchor = bbox_ref if bbox_anchor is None else bbox_anchor
     else:
+        # Align to some external dataset
+        # Here the bbox is either provided or None and will be computed no matter what
         ref_mask_path = os.path.abspath(reference_dataset.kvstore.path) + '_mask'
         if os.path.exists(ref_mask_path):
             reference_dataset_mask = open_store(ref_mask_path, mode='r')
@@ -176,19 +187,23 @@ def _compute_flow(dataset,
         start = dataset.domain.inclusive_min[0]
     else:
         # No external reference: first slice is the reference and will not be warped
-        start = dataset.domain.inclusive_min[0] + 1
-    
+        start = dataset.domain.inclusive_min[0] + 1       
+    anchor_z = start
+
     #---------- Check Progress ----------#
     step_name = 'flow_z'
     flows = []
     transform = np.zeros([original_shape[0], 2, 4], dtype=np.float32)
-
     for z in range(start, dataset.domain.exclusive_max[0]):
         if check_progress(db, dataset_name, step_name, z, doc_filter={'scale': scale}):
             flows.append(dataset_flow[z].read().result())
             transform[z] = dataset_trsf[z].read().result() if transformations is None else transformations[z]
 
-            if bbox_ref is None:
+            if z == anchor_z and bbox_anchor is None:
+                # Get bbox from previous slices (should be passed but take it for return)
+                bbox_anchor = db[dataset_name].find_one({'step_name': step_name, 'local_slice': z, 'scale': scale}, 
+                                                        {'bbox_anchor': 1})['bbox_anchor']
+            elif z > anchor_z and bbox_ref is None:
                 # Get bbox from previous slices
                 bbox_ref = db[dataset_name].find_one({'step_name': step_name, 'local_slice': z, 'scale': scale}, 
                                                      {'bbox_ref': 1})['bbox_ref']
@@ -197,8 +212,9 @@ def _compute_flow(dataset,
         # Everything appears to have been processed, early exit
         flows = homogenize_arrays_shape(flows, pad_value=np.nan)
         flows = np.transpose(flows, [1, 0, 2, 3])  # [channels, z, y, x]
-        return flows, transform, bbox_ref
+        return flows, transform, bbox_ref, bbox_anchor
     
+    # Pick up progress 
     if flows:
         # Resuming: start from after the last checkpointed slice
         start += len(flows)
@@ -227,10 +243,15 @@ def _compute_flow(dataset,
                 ref_mask = resample(ref_mask, ref_scale)
             else:
                 ref_mask = compute_greyscale_mask(ref, downsample_factor=16)
-            if reference_dataset is dataset:
-                start = z_ref + 1  # start from after the actual reference slice
+
+            start = z_ref + 1  # start from after the actual reference slice
+
+            # No point in cropping the reference here, images should be roughly the same shape
+            bbox_ref = [0, reference_dataset.shape[1],   
+                        0, reference_dataset.shape[2]]
+            bbox_anchor = bbox_ref
         else:
-            # External reference slice provided (reference_dataset is dataset, validated above)
+            # External reference slice provided
             z_ref = start
             ref = ref_slice
             ref_mask = ref_slice_mask
@@ -300,15 +321,28 @@ def _compute_flow(dataset,
 
         # Transform mov to match ref
         if transformations is None:
-            overlap_ref, overlap_ref_mask, bbox_ref = get_overlap_ref(ref, 
-                                                                      mov, 
-                                                                      ref_mask=ref_mask, 
-                                                                      mov_mask=mov_mask,
-                                                                      bbox_ref=bbox_ref,
-                                                                      pad_overlap=PAD_OVERLAP)
+            if z == anchor_z:
+                # This is the first slice, use the anchor bbox
+                overlap_ref, overlap_ref_mask, bbox_anchor = get_overlap_ref(ref, 
+                                                                            mov, 
+                                                                            ref_mask=ref_mask, 
+                                                                            mov_mask=mov_mask,
+                                                                            bbox_ref=bbox_anchor,
+                                                                            pad_overlap=PAD_OVERLAP)
+                if reference_dataset is not dataset:
+                    # First and subsequent slices are aligned in the reference dataset
+                    bbox_ref = bbox_anchor
+            else:
+                overlap_ref, overlap_ref_mask, bbox_ref = get_overlap_ref(ref, 
+                                                                          mov, 
+                                                                          ref_mask=ref_mask, 
+                                                                          mov_mask=mov_mask,
+                                                                          bbox_ref=bbox_ref,
+                                                                          pad_overlap=PAD_OVERLAP)
+
             # Refine alignment
             # ref and mov have been resampled already so scale does not need to be accounted for
-            M, output_shape, ref_xy_offset, valid_estimate, stat = estimate_transform_sift(overlap_ref, mov, 0.1, refine_estimate=True)
+            M, output_shape, ref_xy_offset, valid_estimate, _ = estimate_transform_sift(overlap_ref, mov, 0.1, refine_estimate=True)
             
             if not valid_estimate:
                 M, output_shape, ref_xy_offset, valid_estimate, _ = estimate_transform_sift(overlap_ref, mov, 0.3, refine_estimate=True)
@@ -319,12 +353,20 @@ def _compute_flow(dataset,
             # This gets added at the end of the array
             output_shape = np.array(output_shape) + patch_size
         else:
-            overlap_ref, overlap_ref_mask, bbox_ref = get_overlap_ref(ref, 
-                                                                      mov, 
-                                                                      ref_mask=ref_mask, 
-                                                                      mov_mask=mov_mask,
-                                                                      bbox_ref=bbox_ref,
-                                                                      pad_overlap=PAD_OVERLAP)
+            if z == anchor_z:
+                overlap_ref, overlap_ref_mask, bbox_anchor = get_overlap_ref(ref, 
+                                                                        mov, 
+                                                                        ref_mask=ref_mask, 
+                                                                        mov_mask=mov_mask,
+                                                                        bbox_ref=bbox_anchor,
+                                                                        pad_overlap=PAD_OVERLAP)
+            else:
+                overlap_ref, overlap_ref_mask, bbox_ref = get_overlap_ref(ref, 
+                                                                        mov, 
+                                                                        ref_mask=ref_mask, 
+                                                                        mov_mask=mov_mask,
+                                                                        bbox_ref=bbox_ref,
+                                                                        pad_overlap=PAD_OVERLAP)
             # Just get the overlap
             M = transformations[z][:, :-1]
             output_shape = transformations[z][:, -1].astype(int)
@@ -362,6 +404,7 @@ def _compute_flow(dataset,
             'scale': scale,
             'ref_scale': ref_scale,
             'bbox_ref': bbox_ref,
+            'bbox_anchor': bbox_anchor,
             'pad_overlap': PAD_OVERLAP,
             'skipped': False,
             'empty_slice': False,
@@ -379,7 +422,7 @@ def _compute_flow(dataset,
 
     flows = homogenize_arrays_shape(flows, pad_value=np.nan)
     flows = np.transpose(flows, [1, 0, 2, 3])  # [channels, z, y, x]
-    return flows, transform, bbox_ref
+    return flows, transform, bbox_ref, bbox_anchor
 
 
 def compute_flow_dataset(dataset,
@@ -396,6 +439,7 @@ def compute_flow_dataset(dataset,
                          reference_dataset=None,
                          reference_offset=0,
                          bbox_ref=None,
+                         bbox_anchor=None,
                          ref_slice=None,
                          ref_slice_mask=None,
                          target_scale=1,
@@ -403,45 +447,48 @@ def compute_flow_dataset(dataset,
                          z_offset=0):
 
     dataset_name = os.path.basename(os.path.abspath(dataset.kvstore.path))
-    flow, transform, bbox_ref = _compute_flow(dataset=dataset,
-                                              original_shape=original_shape,
-                                              ignore_slices=ignore_slices,
-                                              dataset_mask=dataset_mask,
-                                              reference_dataset=reference_dataset,
-                                              reference_offset=reference_offset,
-                                              destination_path=destination_path,
-                                              patch_size=patch_size,
-                                              stride=stride,
-                                              scale=target_scale,
-                                              ref_scale=ref_scale,
-                                              ref_slice=ref_slice,
-                                              ref_slice_mask=ref_slice_mask,
-                                              bbox_ref=bbox_ref,
-                                              db=db,
-                                              z_offset=z_offset)
+    flow, transform, bbox_ref, bbox_anchor = _compute_flow(dataset=dataset,
+                                                            original_shape=original_shape,
+                                                            ignore_slices=ignore_slices,
+                                                            dataset_mask=dataset_mask,
+                                                            reference_dataset=reference_dataset,
+                                                            reference_offset=reference_offset,
+                                                            destination_path=destination_path,
+                                                            patch_size=patch_size,
+                                                            stride=stride,
+                                                            scale=target_scale,
+                                                            ref_scale=ref_scale,
+                                                            ref_slice=ref_slice,
+                                                            ref_slice_mask=ref_slice_mask,
+                                                            bbox_ref=bbox_ref,
+                                                            bbox_anchor=bbox_anchor,
+                                                            db=db,
+                                                            z_offset=z_offset)
     assert not np.isnan(flow).all()
 
     ds_transform = transform*np.array([[1,1,scale,scale], [1,1,scale,scale]])
     ds_bbox_ref = (np.array(bbox_ref) * scale).astype(int).tolist()
+    ds_bbox_anchor = (np.array(bbox_anchor) * scale).astype(int).tolist()
     ds_ref_slice = resample(ref_slice, scale) if ref_slice is not None else ref_slice
     ds_ref_slice_mask = resample(ref_slice_mask, scale) if ref_slice_mask is not None else ref_slice_mask
-    ds_flow, _, _ = _compute_flow(dataset=dataset,
-                                  original_shape=original_shape,
-                                  ignore_slices=ignore_slices,
-                                  dataset_mask=dataset_mask,
-                                  reference_dataset=reference_dataset,
-                                  reference_offset=reference_offset,
-                                  destination_path=destination_path,
-                                  patch_size=patch_size,
-                                  stride=stride,
-                                  scale=scale*target_scale,
-                                  ref_scale=scale*ref_scale,
-                                  ref_slice=ds_ref_slice,
-                                  ref_slice_mask=ds_ref_slice_mask,
-                                  transformations=ds_transform,
-                                  bbox_ref=ds_bbox_ref,
-                                  db=db,
-                                  z_offset=z_offset)
+    ds_flow, _, _, _ = _compute_flow(dataset=dataset,
+                                     original_shape=original_shape,
+                                     ignore_slices=ignore_slices,
+                                     dataset_mask=dataset_mask,
+                                     reference_dataset=reference_dataset,
+                                     reference_offset=reference_offset,
+                                     destination_path=destination_path,
+                                     patch_size=patch_size,
+                                     stride=stride,
+                                     scale=scale*target_scale,
+                                     ref_scale=scale*ref_scale,
+                                     ref_slice=ds_ref_slice,
+                                     ref_slice_mask=ds_ref_slice_mask,
+                                     transformations=ds_transform,
+                                     bbox_ref=ds_bbox_ref,
+                                     bbox_anchor=ds_bbox_anchor,
+                                     db=db,
+                                     z_offset=z_offset)
     assert not np.isnan(ds_flow).all()
 
     pad = patch_size // 2 // stride
