@@ -135,7 +135,7 @@ def _compute_flow(dataset,
                   transformations=None,
                   bbox_ref=None,
                   z_offset=0):
-
+    
     original_shape = dataset.shape if original_shape is None else original_shape
 
     #---------- Resolve paths and mask ----------#
@@ -154,9 +154,6 @@ def _compute_flow(dataset,
         # Align to self if no reference is provided
         reference_dataset = dataset
         reference_dataset_mask = dataset_mask
-        # No point in cropping the reference here, images should be roughly the same shape
-        bbox_ref = [0, reference_dataset.shape[1],   
-                    0, reference_dataset.shape[2]]
     else:
         ref_mask_path = os.path.abspath(reference_dataset.kvstore.path) + '_mask'
         if os.path.exists(ref_mask_path):
@@ -309,10 +306,10 @@ def _compute_flow(dataset,
                                                                       mov_mask=mov_mask,
                                                                       bbox_ref=bbox_ref,
                                                                       pad_overlap=PAD_OVERLAP)
-            
             # Refine alignment
             # ref and mov have been resampled already so scale does not need to be accounted for
-            M, output_shape, ref_xy_offset, valid_estimate, _ = estimate_transform_sift(overlap_ref, mov, 0.1, refine_estimate=True)
+            M, output_shape, ref_xy_offset, valid_estimate, stat = estimate_transform_sift(overlap_ref, mov, 0.1, refine_estimate=True)
+            
             if not valid_estimate:
                 M, output_shape, ref_xy_offset, valid_estimate, _ = estimate_transform_sift(overlap_ref, mov, 0.3, refine_estimate=True)
             ref_xy_offset = ref_xy_offset.tolist()
