@@ -185,7 +185,12 @@ def create_alignment_configs(datasets, z_offsets, output_configs_dir, config_z, 
                 xy_offset = list(map(int, root_offset))
                 bbox_ref = None
             else:
-                first_slice = z_offset - 1  # First slice is last slice from previous dataset
+                # The reference is the last slice actually written by the predecessor
+                # in this alignment path. Determined from the predecessor's stored
+                # z_offset and shape 
+                predecessor = path[path.index(dataset_name) - 1]
+                pred_idx = [os.path.basename(os.path.abspath(d.kvstore.path)) == predecessor for d in datasets].index(True)
+                first_slice = int(z_offsets[pred_idx, 0]) + ds_bounds[predecessor][1] - 1
                 xy_offset = [0, 0]
                 bbox_ref = None
 
