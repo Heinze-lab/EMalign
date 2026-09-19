@@ -66,7 +66,12 @@ def get_ordered_datasets(config_paths, exclude=[]):
                 dataset = open_store(ds, mode='r')
                 z_shapes.append(dataset.shape[0])
 
-                offset = get_store_attributes(dataset)['voxel_offset']
+                
+                attrs = get_store_attributes(dataset)
+                if attrs is None:
+                    raise FileNotFoundError(f'Attributes do not exist for dataset: {ds}')
+
+                offset = attrs['voxel_offset']
                 offset[0] += previous_offset # Shift this dataset by the previous dataset's offset
                 group_offsets.append(offset)
                 offsets.append(offset)
