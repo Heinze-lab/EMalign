@@ -285,3 +285,195 @@ def estimate_transform_sift(ref_img,
         if ref_offset is not None:
             ref_offset = ref_offset.astype(int)
         return M, output_shape, ref_offset, robust_estimate, robustness_metrics
+    
+
+def budget_keypoints(keypoints, img_shape, n_total=40000, grid=(16, 16)):
+    """Keep n_total keypoints, distributed across a spatial grid rather than
+    taking the globally highest-response ones.
+
+    Args:
+        keypoints (list of cv2.KeyPoint): Uncapped detections for one image.
+        img_shape (tuple): (y, x) shape of the image the keypoints came from.
+        n_total (int): Target number of keypoints to retain.
+        grid (tuple): (rows, cols) of the spatial grid.
+
+    Returns:
+        list of cv2.KeyPoint: The retained subset.
+    """
+    if not keypoints or len(keypoints) <= n_total:
+        return keypoints
+
+    pts = np.array([kp.pt for kp in keypoints])        # (N, 2), (x, y)
+    resp = np.array([kp.response for kp in keypoints])
+
+    y, x = img_shape[:2]
+    n_rows, n_cols = grid
+
+    # Determine keypoint position in the grid
+    col = np.clip((pts[:, 0] / x * n_cols).astype(int), 0, n_cols - 1)
+    row = np.clip((pts[:, 1] / y * n_rows).astype(int), 0, n_rows - 1)
+
+    # Count the number of keypoint per grid cell
+    bucket = row * n_cols + col
+    n_buckets = n_rows * n_cols
+    counts = np.bincount(bucket, minlength=n_buckets)
+
+    # Determine how many keypoints to keep for each cell
+    # We want them distributed equally as much as possible, 
+    # but cells with few keypoints do not fill their quota, 
+    # so that quota goes somewhere else
+    quota = np.zeros(n_buckets, dtype=int)
+    remaining = n_total
+    active = counts > 0
+    while remaining > 0 and active.any():
+        share = remaining // active.sum()
+        if share == 0:
+            # Fewer slots left than active buckets; hand them to the fullest.
+            spare = np.where(active)[0]
+            spare = spare[np.argsort(-counts[spare])][:remaining]
+            quota[spare] += 1
+            break
+        take = np.minimum(share, counts[active] - quota[active])
+        quota[active] += take
+        remaining -= take.sum()
+        active &= quota < counts
+
+    # Sort key points first by bucket, then by response (descending, so strongest first)
+    order = np.lexsort((-resp, bucket))
+    bucket_sorted = bucket[order]
+    rank = np.arange(len(bucket_sorted)) - np.searchsorted(bucket_sorted, bucket_sorted, side='left')
+
+    # Keep the strongest response per bucket to fill the quota
+    kept = order[rank < quota[bucket_sorted]]
+
+    return [keypoints[i] for i in kept]
+
+
+def detect_keypoints_sift(img, mask=None, n_features=40000, grid=(16, 16), root_sift=False):
+    '''Compute keypoints equally distributed across the image. 
+
+    This is slower than using cv2.detectAndCompute but drastically limits the number of keypoints
+    while ensuring that they are distributed across the image. On the contrary, cv2.detectAndCompute
+    keeps the strongest keypoints globally which can give worse result despite having more numerous keypoints.
+    
+    Lower number of keypoints speeds up matching drastically.
+    '''
+    sift = cv2.SIFT_create(nfeatures=0)
+
+    kp = sift.detect(img, mask=mask)
+    kp = budget_keypoints(kp, img.shape, n_total=n_features, grid=grid)
+    kp, desc = sift.compute(img, kp)
+    
+    if root_sift and desc is not None and len(desc):
+        desc = desc.astype(np.float32, copy=True)
+        desc /= (desc.sum(axis=1, keepdims=True) + np.float32(1e-7))
+        np.sqrt(desc, out=desc)
+
+    return kp, desc
+
+def match_keypoints(kp1, kp2, des1, des2):
+    if len(kp1) == 0 or len(kp2) == 0:
+        # No keypoints, no match
+        return None, None, None, None, None
+
+    # Match keypoints to each other
+    # Brute force matchers is slower than flann, but it is exact
+
+    bf = cv2.BFMatcher()
+    matches = bf.knnMatch(des1, des2, k=2)
+
+    good_matches = []
+    for m,n in matches:
+        if m.distance < 0.7*n.distance:
+            good_matches.append(m)
+    
+    good_matches = sorted(good_matches, key=lambda x: x.distance)
+    dst_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1,1,2)
+    src_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1,1,2)
+
+    # Estimate affine transformation matrix
+    try:
+        M, inliers = cv2.estimateAffinePartial2D(src_pts, dst_pts)
+        return M, inliers, good_matches, src_pts, dst_pts
+    except cv2.error as e:
+        if 'count >= 0' in e.err:
+            return None, None, None, None, None
+        else:
+            raise e
+    except Exception as e:
+        raise e
+
+
+def estimate_transform_sift_fast(ref_img, 
+                            mov_img, 
+                            scale=1.0, 
+                            ref_mask=None, 
+                            mov_mask=None,
+                            refine_estimate=True,
+                            root_sift=False,
+                            return_upscaled_matrix=True,
+                            return_raw_homology=False
+                            ):
+    '''Estimate transformation (xy offset and rotation) from img2 to img1 using SIFT.
+    Note that using masks may marginally increase compute time.
+
+    Args:
+        ref_img (np.ndarray): Reference greyscale image.
+        mov_img (np.ndarray): Moving greyscale image.
+        scale (float, optional): Scale to resample images to for computing the offset. Defaults to 1.
+        refine_estimate (bool, optional): Whether to try again with higher resolution if the first estimate is found to be invalid. Defaults to True.
+        root_sift (bool, optional): Whether to use RootSIFT (L1 normalization and square root on descriptors) prior to matching keypoints.
+        return_upscaled_matrix (bool, optional): Whether to return the matrix corresponding to the transformation to apply to the original image (as opposed to the resampled one). Defaults to True.
+        ref_mask (np.ndarray): Boolean mask for the regions to find keypoints in for the reference greyscale image. Defaults to None.
+        mov_mask (np.ndarray): Boolean mask for the regions to find keypoints in for the the moving greyscale image. Defaults to None.
+
+    Returns:
+        tuple of: 
+            M (np.ndarray): Affine transformation matrix to apply to mov_img.
+            output_shape (tuple): (y,x) shape for mov_img after transformation.
+            ref_offset (nd.array): (x,y) offset to apply to ref_img for it to match with mov_img.
+            robust_estimate (bool): Whether the estimate was valid based on the number and proportion of good matches.
+            robustness_metrics (dict): Dictionary of various metrics used to determine the robustness of the estimate.
+    '''
+    # resample images for faster computations
+    ds_ref_img = resample(ref_img, scale)
+    ds_mov_img = resample(mov_img, scale)
+
+    ds_ref_mask = resample(ref_mask.astype(np.uint8), scale) if ref_mask is not None else None # cv2 does not want bool
+    ds_mov_mask = resample(mov_mask.astype(np.uint8), scale) if mov_mask is not None else None
+
+    # Find keypoints using SIFT
+    kp1, des1 = detect_keypoints_sift(ds_ref_img, mask=ds_ref_mask, root_sift=root_sift)
+    kp2, des2 = detect_keypoints_sift(ds_mov_img, mask=ds_mov_mask, root_sift=root_sift)  
+
+    M, inliers, good_matches, src_pts, dst_pts = match_keypoints(kp1, kp2, des1, des2)
+               
+    if M is None or np.isnan(M).any():
+        return None, None, None, False, None
+    
+    # Score the matches to see whether the result is good enough
+    threshold = 0.45
+    pixel_tolerance = 20
+    robustness_index, robustness_metrics = calculate_sift_robustness_index(
+        good_matches, 
+        inliers, 
+        M, 
+        src_pts, 
+        dst_pts, 
+        pixel_tolerance=pixel_tolerance
+        )
+    robust_estimate = robustness_index >= threshold
+
+    if refine_estimate and not robust_estimate and scale<0.9:
+        return estimate_transform_sift_fast(ref_img, mov_img, scale=scale+0.1, refine_estimate=False)
+
+    if return_upscaled_matrix:
+        M[:,2] /= scale
+    
+    if return_raw_homology:
+        # Return the raw homology, not adjusted for shift that could crop image
+        return M, None, None, robust_estimate, robustness_metrics
+    
+    M, output_shape, ref_offset = adjust_matrix_to_shape(mov_img, M)
+    ref_offset = ref_offset.astype(int)
+    return M, output_shape, ref_offset, robust_estimate, robustness_metrics
