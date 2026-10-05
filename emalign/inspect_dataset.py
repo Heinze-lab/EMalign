@@ -10,17 +10,19 @@ from emalign.align_z.utils import get_ordered_datasets
 from emalign.io.store import open_store
 from emalign.io.store import find_ref_slice
 from emalign.visualize.nglancer import add_layers, start_nglancer_viewer
+from emalign.visualize.shader import *
 
 
 def read_data(
             dataset_path,
             bounding_box=None,
-            keep_missing=False):
+            keep_missing=False,
+            is_flow=False):
     
     dataset = open_store(dataset_path, mode='r')
     
     if bounding_box is None:
-        data = dataset[:].read().result()
+        data = dataset.read().result()
     else:
         # bounding_box: min_z, max_z, min_y, max_y, min_x, max_x
 
@@ -31,20 +33,29 @@ def read_data(
         if len(bounding_box) > 2:
             # Y axis
             y0 = max(bounding_box[2], 0)
-            y1 = min(bounding_box[3], dataset.domain.exclusive_max[1])
             
             # X axis
             x0 = max(bounding_box[4], 0)
-            x1 = min(bounding_box[5], dataset.domain.exclusive_max[2])
+            
+            if is_flow:
+                # Channels are Z, C, Y, X
+                y1 = min(bounding_box[3], dataset.domain.exclusive_max[2])
+                x1 = min(bounding_box[5], dataset.domain.exclusive_max[3])
+            else:
+                y1 = min(bounding_box[3], dataset.domain.exclusive_max[1])
+                x1 = min(bounding_box[5], dataset.domain.exclusive_max[2])
         else:
             # Y axis
             y0 = x0 = 0
-            y1, x1 = dataset.domain.exclusive_max[1:]
+            y1, x1 = dataset.domain.exclusive_max[-2:]
 
-        data = dataset[z0:z1, y0:y1, x0:x1].read().result()
+        if is_flow:
+            data = dataset[z0:z1, :, y0:y1, x0:x1].read().result()
+        else:
+            data = dataset[z0:z1, y0:y1, x0:x1].read().result()
 
-    if not keep_missing:
-        data = data[data.any(axis=(1,2))]
+    if not keep_missing and not is_flow:
+        data = data[data.any(axis=(-2,-1))]
     
     return data
 
@@ -71,6 +82,30 @@ def resolve_dataset_path(dataset_path, mode=None):
         if os.path.isdir(xy_intermediate):
             print(f'Using xy_intermediate folder as input.')
             return xy_intermediate, mode
+        else:
+            raise FileNotFoundError(f'xy_intermediate subfolder does not exist: {xy_intermediate}')
+        
+    # Inspect Z intermediate steps
+    if dataset_path.endswith('z_intermediate'):            
+        if dataset_path.endswith('z_intermediate'):
+            z_intermediate = dataset_path
+        else:
+            # If mode is asks for it, find z_intermediate.
+            z_intermediate = os.path.join(dataset_path, 'z_intermediate')
+
+        dirs = os.listdir(z_intermediate)
+        if 'flow_final' in dirs:
+            msg = 'Using final flow as input.'
+            z_intermediate = os.path.join(z_intermediate, 'flow_final')
+        else:
+            msg = 'Using raw flow at full scale as input.'
+            z_intermediate = os.path.join(z_intermediate, 'flow1x')
+
+        if mode is None:
+            mode = 'flow'
+        if os.path.isdir(z_intermediate):
+            print(msg)
+            return z_intermediate, mode
         else:
             raise FileNotFoundError(f'xy_intermediate subfolder does not exist: {xy_intermediate}')
     
@@ -134,7 +169,7 @@ def inspect_dataset(
         print(f'Dataset shape (ZYX):\n    {dataset.shape}')
         sys.exit()
         
-    modes = ['z_transitions', 'all_ds_xy', 'all_ds_xy_first_z']
+    modes = ['z_transitions', 'all_ds_xy', 'all_ds_xy_first_z', 'flow']
     if mode is not None and mode not in modes:
         raise ValueError(f'Invalid mode. Must be one of: {modes}')
 
@@ -174,8 +209,6 @@ def inspect_dataset(
 
         window = 20
         for z, _, _ in z_offsets:
-            data_range = [int(z - max(1, window/2)), int(z + max(1, window/2))]
-
             try:
                 d = read_data(dataset_path, bounding_box=bounding_box, keep_missing=keep_missing)
             except:
@@ -214,7 +247,18 @@ def inspect_dataset(
                        voxel_offsets=[voxel_offset],
                        visible=visible,
                        clear_viewer=False)
-    input('All data loaded. Press ENTER or ESCAPE to exit.')
+    elif mode == 'flow':
+        d = read_data(dataset_path, bounding_box=bounding_box, keep_missing=keep_missing, is_flow=True)
+        print(d.shape)
+        channels = d.transpose([1, 0, 2, 3])
+        channel_names = ['x', 'y', 'sharp', 'ratio']
+        add_layers([*channels], 
+                   viewer, 
+                   voxel_offsets=[voxel_offset]*len(channels),
+                   names=[dataset_name + f'_{c}' for c in channel_names[:len(channels)]],
+                   shaders=[FLOW_SHADER]*len(channels))
+
+    input('All data loaded. Press ENTER to exit.')
 
 
 if __name__ == '__main__':
