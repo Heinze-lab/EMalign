@@ -21,10 +21,12 @@ from typing import List, Optional
 from emalign.align_z.config import add_config_metadata, get_fuse_config_dir, load_fuse_plan, validate_config_directory, CONFIG_VERSION
 from emalign.align_z.utils import compute_alignment_path, compute_dataset_bounds, determine_initial_offset, determine_initial_offset_ref, get_ordered_datasets
 from emalign.io.store import get_store_attributes
+from emalign.utils.logging_utils import setup_logging
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger('absl').setLevel(logging.WARNING)
 logging.getLogger('jax._src.xla_bridge').setLevel(logging.WARNING)
+setup_logging(logging.INFO)
 
 # Constants
 PAD_OFFSET = np.array([1000, 1000])  # Offset to add to origin for drift correction
@@ -230,10 +232,11 @@ def create_alignment_configs(datasets, z_offsets, output_configs_dir, config_z, 
         'yx_target_resolution': yx_target_resolution,
         'dataset_local_bounds': ds_bounds,
         'reference_path': reference_path,
-        'reference_offset': reference_offset,
+        'global_reference_offset': reference_offset,
         'ref_global_bbox': ref_global_bbox,
         'destination_path': destination_path,
-        'project_name': project_name
+        'project_name': project_name,
+        'save_downsampled': save_downsampled
     }
     align_plan = add_config_metadata(align_plan)
 
@@ -281,7 +284,8 @@ def create_alignment_configs(datasets, z_offsets, output_configs_dir, config_z, 
                 'dataset_path': os.path.abspath(dataset.kvstore.path),
                 'dataset_name': dataset_name,
                 'reference_path': reference_path,
-                'reference_offset': reference_offset,
+                'align_to_reference': reference_path is not None,  # Every slice aligns to its match in the reference
+                'reference_offset': reference_offset + z_offset - ds_bounds[dataset_name][0],
                 'alignment_path': path,
                 'reverse_order': order,
                 'project_name': project_name,
