@@ -217,7 +217,8 @@ def align_stack_xy(output_path,
                                             k0=k0,
                                             k=k,
                                             gamma=gamma,
-                                            batch_size=256
+                                            stop_v_max=0.01,
+                                            batch_size=512
                                                 )
                 # Determine the render order once (on the first processed slice) and reuse it
                 # for every subsequent slice. Tiles rendered last end up on top: by default the
