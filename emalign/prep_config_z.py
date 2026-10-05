@@ -430,10 +430,7 @@ def prep_config_z(project_dir: str,
     return output_configs_dir
 
 
-if __name__ == '__main__':
-
-    parser = argparse.ArgumentParser(description='Prepare configuration files for Z alignment.')
-
+def add_parser_arguments(parser):
     # Required arguments
     parser.add_argument('-p', '--project-dir',
                         metavar='PROJECT_DIR',
@@ -493,7 +490,13 @@ if __name__ == '__main__':
                         action='store_true',
                         default=False,
                         help='Force overwrite of existing config files. Default: user is prompted if configs exist')
+    return parser
 
-    args = parser.parse_args()
+if __name__ == '__main__':
 
+    parser = argparse.ArgumentParser(
+        description='Prepare configuration files for Z alignment.',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+        )
+    args = add_parser_arguments(parser).parse_args()
     prep_config_z(**vars(args))

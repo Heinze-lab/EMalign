@@ -200,10 +200,7 @@ def prep_align_stacks(input_dirs,
             json.dump(main_config, f, indent='')
 
 
-if __name__ == '__main__':
-
-    parser=argparse.ArgumentParser('Script aligning tiles in XY based on SOFIMA (Scalable Optical Flow-based Image Montaging and Alignment). \n\
-                                    This script was written to match the file structure produced by the ThermoFisher MAPs software.')
+def add_parser_arguments(parser):
     
     # Required arguments
     parser.add_argument('-p', '--project-dir',
@@ -305,7 +302,15 @@ if __name__ == '__main__':
                         default='volumescope',
                         type=str,
                         help='Valid mode for the IO backend, defining how to parse info from file names (see emalign.io.backend for valid modes).')
+    return parser
 
-    args=parser.parse_args()
+
+if __name__ == '__main__':
+
+    parser=argparse.ArgumentParser('Script aligning tiles in XY based on SOFIMA (Scalable Optical Flow-based Image Montaging and Alignment). \n\
+                                    This script was written to match the file structure produced by the ThermoFisher MAPs software.')
+
+
+    args = add_parser_arguments(parser).parse_args()
 
     prep_align_stacks(**vars(args)) 

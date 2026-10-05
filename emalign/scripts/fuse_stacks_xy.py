@@ -584,14 +584,7 @@ def _format_slices(slices, max_shown=10):
     return f'{slices[:max_shown]}... (+{len(slices) - max_shown} more)'
 
 
-if __name__ == '__main__':
-
-    parser = argparse.ArgumentParser(
-        description='Fuse XY aligned stacks that overlap on the same Z slices, so that Z alignment\n'
-                    'starts from a single image per slice. Run after align_dataset_xy.',
-        formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-
+def add_parser_arguments(parser):
     # Required arguments
     parser.add_argument('-p', '--project-dir',
                         metavar='PROJECT_DIR',
@@ -629,8 +622,19 @@ if __name__ == '__main__':
                         nargs='+',
                         default=[''],
                         help='Wipe progress for one or more specific fused stack(s) before starting.')
+    return parser
 
-    args = parser.parse_args()
+
+if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser(
+        description='Fuse XY aligned stacks that overlap on the same Z slices, so that Z alignment\n'
+                    'starts from a single image per slice. Run after align_dataset_xy.',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+
+
+    args = add_parser_arguments(parser).parse_args()
 
     # Check GPU
     try:
