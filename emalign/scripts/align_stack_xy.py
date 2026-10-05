@@ -1,11 +1,4 @@
 import os
-
-# To prevent running out of memory because of preallocation
-os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
-
-os.environ['OMP_NUM_THREADS'] = '4'
-os.environ['MKL_NUM_THREADS'] = '4'
-
 import warnings
 # Prevent printing the following warning, which does not seem to be an issue for the code to run properly:
 #     /home/autoseg/anaconda3/envs/alignment/lib/python3.12/multiprocessing/popen_fork.py:66: RuntimeWarning: os.fork() was called. 

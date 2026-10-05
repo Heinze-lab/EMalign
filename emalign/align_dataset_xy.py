@@ -1,11 +1,11 @@
 import os
 
-# To prevent running out of memory because of preallocation
-os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
+# # To prevent running out of memory because of preallocation
+# os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
-# Influences performance
-os.environ['OMP_NUM_THREADS'] = '4'
-os.environ['MKL_NUM_THREADS'] = '4'
+# # Influences performance
+# os.environ['OMP_NUM_THREADS'] = '4'
+# os.environ['MKL_NUM_THREADS'] = '4'
 
 import warnings
 # Prevent printing the following warning, which does not seem to be an issue for the code to run properly:
@@ -31,9 +31,10 @@ logging.getLogger('jax._src.xla_bridge').setLevel(logging.WARNING)
 # Constants
 NUM_WORKERS = 1
 
-def align_dataset_xy(config_path,
-                     num_workers,
+def align_dataset_xy(project_dir,
+                     num_workers=NUM_WORKERS,
                      overwrite=False,
+                     start_over=False,
                      wipe_progress_stacks=None):
     '''Align and stitch in XY consecutive image stacks defined by a configuration file.
 
@@ -42,13 +43,18 @@ def align_dataset_xy(config_path,
     If there are no images to align (i.e. only one tile in the stack), the image will just be written to zarr.
 
     Args:
-        config_path (str): Absolute path to a JSON file containing the configuration.
-            See documentation for how to format the configuration file (work in progress).
+        project_dir (str): Project directory containing the configurations created with prep_config_xy.
         num_workers (int): Number of threads to use for multiprocessing when relevant.
         overwrite (bool): Whether to overwrite dataset. If True, will delete existing dataset and start over. If False, will check for progress and skip processed slices. Defaults to False.
-        wipe_progress_stacks (str, optional): Name of the stack to wipe progress for. Defaults to None.
+        start_over (bool): Whether to wipe the progress of all stacks and process everything again. Defaults to False.
+        wipe_progress_stacks (list of str, optional): Names of the stacks to wipe progress for. Defaults to None.
     '''
-    
+
+    config_path = os.path.join(project_dir, 'config/xy_config/main_config.json')
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f'Configuration file does not exist: {config_path}\nDid you run prep_config_xy?')
+
+    logging.info(f'Loading configuration from: {config_path}')
     with open(config_path, 'r') as f:
         main_config = json.load(f)
 
@@ -73,6 +79,22 @@ def align_dataset_xy(config_path,
 
     if not output_path.endswith('.zarr'):
         raise RuntimeError('Output path must be a zarr container (.zarr)')
+
+    # Handle start_over
+    if start_over:
+        try:
+            input('WARNING: All XY progress will be wiped and all stacks will be processed.\n'
+                  'Press ENTER to continue or CTRL+C to abort\n')
+        except KeyboardInterrupt:
+            logging.info('\nAborted by user')
+            sys.exit(0)
+        wipe_progress_stacks = list(stack_configs)
+
+    # Progress is wiped by align_stack_xy for the requested stacks
+    wipe_progress_stacks = [s for s in (wipe_progress_stacks or []) if s]
+    unknown = [s for s in wipe_progress_stacks if s not in stack_configs]
+    if unknown:
+        raise RuntimeError(f'No configuration found for stack(s): {unknown}')
 
     # Find tilesets with wanted resolution
     logging.info(f'Tilesets found in:\n   {main_dir}')
@@ -112,20 +134,16 @@ def align_dataset_xy(config_path,
     logging.info(f'Done! Output can be found at: {output_path}')
     
 
-if __name__ == '__main__':
-
-
-    parser=argparse.ArgumentParser('Script aligning tiles in XY based on SOFIMA (Scalable Optical Flow-based Image Montaging and Alignment). \n\
-                                    This script was written to match the file structure produced by the ThermoFisher MAPs software.')
+def add_parser_arguments(parser):
     
     # Required arguments
-    parser.add_argument('-cfg', '--config',
-                        metavar='CONFIG_PATH',
-                        dest='config_path',
+    parser.add_argument('-p', '--project-dir',
+                        metavar='PROJECT_DIR',
+                        dest='project_dir',
                         required=True,
                         type=str,
-                        help='Path to the main task config.')
-    
+                        help='Project directory containing the configurations created with prep_config_xy.')
+
     # Optional arguments
     parser.add_argument('-c', '--cores',
                         metavar='CORES',
@@ -134,13 +152,27 @@ if __name__ == '__main__':
                         default=NUM_WORKERS,
                         help=f'Number of threads to use. Default: {NUM_WORKERS}')
     parser.add_argument('--overwrite', action='store_true', help='Overwrite existing dataset.')
+    parser.add_argument('--start-over',
+                        dest='start_over',
+                        default=False,
+                        action='store_true',
+                        help='Wipe all progress and restart')
     parser.add_argument('--wipe-progress',
                         dest='wipe_progress_stacks',
                         type=str,
                         nargs='+',
-                        default=[''],
-                        help='Wipe progress for a specific stack before starting.')
-    args=parser.parse_args()
+                        default=[],
+                        help='Wipe progress for one or more specific stack(s) before starting')
+    return parser
+
+
+if __name__ == '__main__':
+
+
+    parser=argparse.ArgumentParser('Script aligning tiles in XY based on SOFIMA (Scalable Optical Flow-based Image Montaging and Alignment). \n\
+                                    This script was written to match the file structure produced by the ThermoFisher MAPs software.')
+
+    args = add_parser_arguments(parser).parse_args()
 
 
     try:
