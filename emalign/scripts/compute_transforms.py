@@ -11,9 +11,11 @@ from emalign.align_z.config import load_align_plan, load_dataset_configs, valida
 from emalign.align_z.transform import chain_transforms_path, compute_global_bbox, compute_transforms_stack, shift_transforms
 from emalign.io.store import set_store_attributes, get_store_attributes
 from emalign.io.progress import get_mongo_client, get_mongo_db, wipe_progress
+from emalign.utils.logging_utils import setup_logging
 
 
 logging.basicConfig(level=logging.INFO)
+setup_logging(logging.INFO)
 
 
 def load_and_validate_configs(config_dir):
@@ -50,7 +52,7 @@ def load_and_validate_configs(config_dir):
 
 
 def compute_dataset_transforms(
-        project_dir: str,
+        project_dir,
         num_workers=0,
         start_over=False,
         wipe_progress_stacks=None
@@ -73,7 +75,16 @@ def compute_dataset_transforms(
 
     logging.info(f'Project: {project_name}')
     logging.info(f'Root stack: {root_stack}')
-    logging.info(f'Number of alignment paths: {len(paths)}')
+    logging.info(f'Number of alignment paths: {len(paths)}\n')
+    logging.info('ToDo list:')
+    mentioned = []
+    for path in paths:
+        for dataset_name in path:
+            if dataset_name in mentioned:
+                continue
+            logging.info(f'    - {dataset_name}')
+            mentioned.append(dataset_name)
+    print()
 
     if any(reverse_order):
         raise NotImplementedError('reverse_order not yet implemented.')
@@ -94,18 +105,14 @@ def compute_dataset_transforms(
         client = get_mongo_client(mongodb_config_filepath)
         db = get_mongo_db(client, project_name)
         wipe_progress_stacks = []
-        steps = ['transform_z', 'flow_z', 'mesh_relax_z', 'render_z']
         for dataset_name in dataset_configs:
-            for step in steps:
-                wipe_progress(db, dataset_name, step_name=step) # database progress
-            attrs = get_store_attributes(dataset_configs[dataset_name]['dataset_path'])
-            attrs['z_aligned'] = False # attribute flag when data has been processed
-            set_store_attributes(dataset_configs[dataset_name]['dataset_path'], attrs)
+            wipe_progress(db, dataset_name, step_name='transform_z') # database progress
+            wipe_progress_stacks.append(dataset_name)
             logging.info(f'Wiped progress for {dataset_name}')
 
     # First pass: compute raw in-stack transforms
     logging.info('Starting transforms computation...')
-    logging.info(f'Number of cores used for computing transforms: {num_workers}')
+    logging.info(f'Number of cores used for computing transforms: {num_workers}\n')
     for i, path in enumerate(paths):
         prev_dataset = None
         for dataset_name in path:
@@ -122,7 +129,8 @@ def compute_dataset_transforms(
             config['wipe_progress_flag'] = any([dataset_name == s for s in wipe_progress_stacks])
             config['reference_dataset'] = prev_dataset
 
-            # Start alignment
+            # Start computing transforms
+            logging.info(dataset_name)
             params = signature(compute_transforms_stack).parameters
             relevant_args = {k: v for k, v in config.items() if k in params}
             compute_transforms_stack(**relevant_args)
@@ -155,16 +163,8 @@ def compute_dataset_transforms(
 
     logging.info('Done!')
 
-    
 
-if __name__ == '__main__':
-
-    parser = argparse.ArgumentParser(
-        description='Compute affine transforms using pre-generated configuration files.\n'
-                    'Configuration files should be created using prep_config_z first.',
-        formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-
+def add_parser_arguments(parser):
     # Required arguments
     parser.add_argument('-p', '--project-dir',
                         metavar='PROJECT_DIR',
@@ -191,9 +191,17 @@ if __name__ == '__main__':
                         nargs='+',
                         default=[''],
                         help='Wipe progress for one or more specific stack(s) before starting')
+    return parser
 
-    args = parser.parse_args()
 
+if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser(
+        description='Compute affine transforms using pre-generated configuration files.\n'
+                    'Configuration files should be created using prep_config_z first.',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+        )
+    args = add_parser_arguments(parser).parse_args()
     compute_dataset_transforms(
         project_dir=args.project_dir,
         num_workers=args.num_workers,

@@ -1,5 +1,5 @@
 from sofima import warp
-from ..io.store import write_slice
+from ..io.store import write_data
 
 def render_slice_z(destination, z, data, inv_map, data_bbox, flow_bbox, stride, return_render=False, parallelism=1):
 
@@ -8,4 +8,4 @@ def render_slice_z(destination, z, data, inv_map, data_bbox, flow_bbox, stride, 
     if return_render:
         return aligned[0,0,...]
     else:
-        return write_slice(destination, aligned[0,0,...], z)
+        return write_data(destination, aligned[0,0,...], z)
