@@ -94,6 +94,12 @@ def compute_transforms_stack(dataset_path,
         ref_res = get_store_attributes(reference)['resolution'][-1]
         ref_scale = 1 if yx_target_resolution is None else ref_res / yx_target_resolution
 
+    # When every slice is matched to the reference, match at the coarser of the two resolutions:
+    # upsampling a coarse reference adds nothing for SIFT and multiplies its size (50 -> 12 nm is
+    # ~17x the pixels). Both images are loaded at match_scale relative to the target resolution,
+    # and the translation of each transform is scaled back to target pixels afterwards.
+    match_scale = min(1, 1 / ref_scale) if align_to_reference else 1
+
     z_min = local_z_min if local_z_min is not None else dataset.domain.inclusive_min[0]
     z_max = local_z_max if local_z_max is not None else dataset.domain.exclusive_max[0]
     ignore_slices = set(ignore_slices)  
@@ -204,7 +210,7 @@ def compute_transforms_stack(dataset_path,
         up_to = min(up_to, z_max - 1)
         while next_read <= up_to:
             read_futures[next_read] = read_pool.submit(
-                load_slice, dataset, dataset_mask, next_read, target_scale)
+                load_slice, dataset, dataset_mask, next_read, target_scale * match_scale)
             next_read += 1
 
     # ---------- Compute pairwise transforms ----------
@@ -243,7 +249,7 @@ def compute_transforms_stack(dataset_path,
         if align_to_reference:
             # Matching slice in the reference, in global coordinates
             ref_slice = load_reference_slice(
-                reference, reference_mask, z + reference_offset, ref_scale)
+                reference, reference_mask, z + reference_offset, ref_scale * match_scale)
 
         # Compute SIFT transform
         res = _pairwise_transform(
