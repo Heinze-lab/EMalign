@@ -23,6 +23,8 @@ def read_data(
     
     if bounding_box is None:
         data = dataset.read().result()
+        z0 = 0
+        z1 = data.shape[0]
     else:
         # bounding_box: min_z, max_z, min_y, max_y, min_x, max_x
 
@@ -56,7 +58,8 @@ def read_data(
 
     if not keep_missing and not is_flow:
         data = data[data.any(axis=(-2,-1))]
-    
+    if data.size == 0:
+        raise RuntimeError(f'No data found in range [{z0}, {z1}[')
     return data
 
 def resolve_dataset_path(dataset_path, mode=None):
