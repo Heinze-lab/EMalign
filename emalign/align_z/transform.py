@@ -25,7 +25,7 @@ def _pairwise_transform(ref_img, ref_mask, mov_img, mov_mask):
             ref_mask=ref_mask, mov_mask=mov_mask,
             refine_estimate=False, return_raw_homology=True)
         if valid and M is not None:
-            return M.astype(np.float64)
+            return M.astype(np.float64), sift_scale
     return None
 
 
@@ -246,24 +246,28 @@ def compute_transforms_stack(dataset_path,
                 reference, reference_mask, z + reference_offset, ref_scale)
 
         # Compute SIFT transform
-        M = _pairwise_transform(
+        res = _pairwise_transform(
             ref_slice['img'], ref_slice['mask'], 
             mov_slice['img'], mov_slice['mask']
             )
+        if res is not None:
+            M, sift_scale = res
+            # Back to target resolution pixels, the linear part is scale invariant
+            M[:, 2] /= match_scale
 
-        # Write to file
-        if M is not None:
+            # Write to file
             write_t(z, M)
             if not align_to_reference:
                 ref_slice = mov_slice   # Reference for next slice
         else:
             # Failed to find transform, so we keep the reference
+            sift_scale = None
             n_failed += 1
 
         log_progress(db, dataset_name, step_name, global_z, z,
-                     {'valid_estimate': M is not None, 'scale': target_scale,
-                      'z_ref': int(ref_slice['z']), 'ref_scale': ref_scale,
-                      'skipped': M is None})
+                     {'valid_estimate': res is not None, 'scale': target_scale,
+                      'match_scale': match_scale, 'z_ref': int(ref_slice['z']), 'ref_scale': ref_scale,
+                      'skipped': res is None, 'sift_scale': sift_scale})
         
 
     # Shutdown the read pool

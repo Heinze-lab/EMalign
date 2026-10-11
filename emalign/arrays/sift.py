@@ -4,7 +4,7 @@ import numpy as np
 from emalign.arrays.utils import resample
 
 
-SIFT_SCALES = (0.1, 0.3)  # Internal SIFT downsample scales to try, in order
+SIFT_SCALES = (0.1, 0.3, 0.5)  # Internal SIFT downsample scales to try, in order
 
 
 def adjust_matrix_to_shape(mov_img, M):
