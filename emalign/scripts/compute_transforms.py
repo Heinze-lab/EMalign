@@ -127,7 +127,8 @@ def compute_dataset_transforms(
 
             config['num_workers'] = num_workers
             config['wipe_progress_flag'] = any([dataset_name == s for s in wipe_progress_stacks])
-            config['reference_dataset'] = prev_dataset
+            if not config.get('align_to_reference', False):
+                config['reference_path'] = prev_dataset
 
             # Start computing transforms
             logging.info(dataset_name)

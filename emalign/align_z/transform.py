@@ -36,7 +36,7 @@ def compute_transforms_stack(dataset_path,
                              yx_target_resolution,
                              local_z_min=None,
                              local_z_max=None,
-                             reference_dataset=None,
+                             reference_path=None,
                              reference_offset=0,
                              align_to_reference=False,
                              ignore_slices=(),
@@ -47,11 +47,11 @@ def compute_transforms_stack(dataset_path,
     '''Compute and store the pairwise affine for every slice of one stack.
 
     The anchor each slice is aligned to depends on the reference:
-      - no reference_dataset: the anchor is the first valid slice of this stack,
+      - no reference_path: the anchor is the first valid slice of this stack,
         it gets the identity transform and every slice follows the previous one.
-      - reference_dataset: the anchor is the last valid slice of the reference,
+      - reference_path: the anchor is the last valid slice of the reference,
         then every slice still follows the previous one of this stack.
-      - reference_dataset + align_to_reference: every slice is aligned to its
+      - reference_path + align_to_reference: every slice is aligned to its
         matching slice in the reference, found at z + reference_offset.
     '''
 
@@ -81,15 +81,15 @@ def compute_transforms_stack(dataset_path,
     target_scale = 1 if yx_target_resolution is None else res / yx_target_resolution
 
     # Get reference store, it may have its own resolution
-    if reference_dataset is None:
+    if reference_path is None:
         if align_to_reference:
-            raise ValueError('align_to_reference requires a reference_dataset.')
+            raise ValueError('align_to_reference requires a reference_path.')
         reference = reference_mask = None
         ref_scale = target_scale
     else:
-        reference_dataset = os.path.abspath(reference_dataset)
-        reference = open_store(reference_dataset, mode='r', dtype=ts.uint8)
-        reference_mask = open_store(reference_dataset + '_mask', mode='r',
+        reference_path = os.path.abspath(reference_path)
+        reference = open_store(reference_path, mode='r', dtype=ts.uint8)
+        reference_mask = open_store(reference_path + '_mask', mode='r',
                                     dtype=ts.bool, allow_missing=True)
         ref_res = get_store_attributes(reference)['resolution'][-1]
         ref_scale = 1 if yx_target_resolution is None else ref_res / yx_target_resolution
@@ -147,7 +147,7 @@ def compute_transforms_stack(dataset_path,
         first_z = z_min
 
         # Find first slice to use
-        if reference_dataset is None:
+        if reference_path is None:
             # Find the first non-empty slice in this dataset
             ref_slice = load_slice(dataset, dataset_mask, first_z, target_scale)
             while ref_slice['empty']:
@@ -177,11 +177,12 @@ def compute_transforms_stack(dataset_path,
             {
                 'dataset_path': dataset_path,
                 'scale': target_scale,
-                'external_first_slice': reference_dataset is not None,
-                'reference_path': reference_dataset,
+                'external_first_slice': reference_path is not None,
+                'reference_path': reference_path,
                 'reference_offset': int(reference_offset),
                 'align_to_reference': bool(align_to_reference),
                 'ref_scale': ref_scale,
+                'match_scale': match_scale,
                 'raw_homography': True,  # Pairwise, not cumulative transforms
                 'first_z': int(first_z)
         })
