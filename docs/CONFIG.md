@@ -1,4 +1,4 @@
-CONFIGURATION files stored as JSON dictionaries are required for each alignment step. Most of them are created automatically from user input by the preparation steps (`xy prep` and `z prep`).
+Configuration files stored as JSON dictionaries are required for each alignment step. Most of them are created automatically from user input by the preparation steps (`xy prep` and `z prep`).
 
 ## Configuration directory
 
