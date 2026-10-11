@@ -1,27 +1,40 @@
-Configuration files stored as JSON dictionaries are required for each alignment step. Most of them are automatically created based on user input by the `prep_config*.py` scripts. 
+CONFIGURATION files stored as JSON dictionaries are required for each alignment step. Most of them are created automatically from user input by the preparation steps (`xy prep` and `z prep`).
 
-These files are stored in the project root directory, a required argument for `prep_config_xy.py` (project_dir). The following directory structure is created automatically:
+## Configuration directory
 
-```
-project_dir
-|
-└── config
-    |
-    ├── xy_config                   # Created by prep_config_xy.py
-    |       main_config.json        # General information about the project and parameters for XY alignment
-    |       xy_STACK_1.json         # Instructions and input paths specific to STACK_1
-    |       xy_STACK_2.json
-    └── z_config                    # Created by prep_config_z.py
-            00_align_plan.json      # General information about the project and parameters for Z alignment
-            z_STACK_1.json          # Instructions, parameters, and input path specific to STACK_1
-            z_STACK_2.json
-            z_STACK_2.json
+Configuration files are written in the `config` folder at the root of the project directory, given with `-p` to every step:
 
 ```
+project_dir/
+└── config/
+    ├── xy_config/
+    │   ├── main_config.json
+    │   └── xy_<dataset_name>.json
+    ├── fuse_config/
+    │   ├── 00_fuse_plan.json
+    │   └── fuse_<zmin>_<zmax>_<i>.json
+    └── z_config/
+        ├── 00_align_plan.json
+        └── z_<dataset_name>.json
+```
+
+`xy_config` is created by `xy prep` and contains all configuration files necessary for XY alignment.
+* `main_config.json`: general information about the project and parameters for XY alignment
+* `xy_<dataset_name>.json`: one file per stack, with instructions and input paths specific to this stack
+
+`fuse_config` is created by `xy fuse` on its first run, only if some stacks overlap on the same Z slices.
+* `00_fuse_plan.json`: groups of stacks to fuse
+* `fuse_<zmin>_<zmax>_<i>.json`: one file per group, with the stacks to fuse and the name of the fused stack
+
+`z_config` is created by `z prep` and contains all configuration files necessary for Z alignment.
+* `00_align_plan.json`: general information about the project and order in which stacks are aligned
+* `z_<dataset_name>.json`: one file per stack, with instructions, parameters, and input path specific to this stack
+
+See [OUTPUT.md](OUTPUT.md) for the datasets produced by each step.
 
 ## Configuration for Z alignment (user created)
 
-This dictionary is a required input to `prep_config_z.py`. It contains parameters for flow computations, elastic optimization, and rendering.
+This dictionary is a required input to `z prep` (`-cfg-z`). It contains parameters for flow computations, elastic optimization, and rendering.
 
 ```json
 {

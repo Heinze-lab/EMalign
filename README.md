@@ -1,6 +1,6 @@
 # EMalign
 
-A Python package for aligning Serial Block-face Electron Microscopy (SBEM) image tiles into 3D volumetric stacks using [SOFIMA](https://github.com/google-research/sofima) (Scalable Optical Flow-based Image Montaging and Alignment).
+EMalign is a Python package for aligning Serial Electron Microscopy (SEM) image tiles into 3D volumetric stacks using [SOFIMA](https://github.com/google-research/sofima) (Scalable Optical Flow-based Image Montaging and Alignment). 
 
 ## Installation
 
@@ -30,63 +30,96 @@ _Installation was tested on Ubuntu 20.04 with Python 3.12._
 
 ## Other requirements
 
+### MongoDB
 A MongoDB database is currently required for metadata and progress tracking. The free community edition is sufficient for this. It can be found [here](https://www.mongodb.com/products/self-managed/community-edition) along with installation tutorials.
 
+### Neuroglancer
 Neuroglancer is currently required for data visualization. Its installation may require extra steps described [here](https://github.com/google/neuroglancer?tab=readme-ov-file#building).
 
-## Quick Start
+## Usage
 
-### 1. XY Alignment (Tile Stitching)
+Alignment can be split into two major steps:
+* XY alignment: image tiles representing one large region of interest are stitched along overlapping regions to obtain one contiguous image per slice.
+* Z alignment: warping of slices along the Z axis to produce smooth scrolling through the output stack.
 
-**Prepare configuration**:
+Run alignment with the `run_alignment.py` script. Every step takes the project directory (`-p`), where configurations, progress and outputs are kept. Use `--help` on any step for its full list of options.
+
+See docs about the resulting outputs [here](/docs/OUTPUT.md).
+
+### Step by step
+
 ```bash
-python prep_config_xy \
-  -i /path/to/tiles/directory \
-  -p /path/to/project_dir \
-  -o /path/to/zarr.zarr \
-  -res 10 10 \
-  -c 4
+# 1. XY alignment
+python run_alignment.py xy prep -p /path/to/project_dir -i /path/to/raw_data -r 10 10
+python run_alignment.py -g 0 xy align -p /path/to/project_dir -c 4
+
+# (Optional) Fuse stacks overlapping on the same Z slices
+python run_alignment.py -g 0 xy fuse -p /path/to/project_dir -c 4
+
+# 2. Z alignment
+python run_alignment.py z prep -p /path/to/project_dir -cfg-z /path/to/z_config.json
+python run_alignment.py -g 0 z transform -p /path/to/project_dir -c 4
+python run_alignment.py -g 0 z flow -p /path/to/project_dir -c 4
+python run_alignment.py -g 0 z render -p /path/to/project_dir -c 4
 ```
 
-**Execute alignment**:
+`-g` selects the GPU(s) to use (e.g. `-g 0,1`). An example of Z parameters can be found in [config_z.json](emalign/config/config_z.json). See other flags below.
+
+### Automatic mode
+
+Without a step, `run_alignment.py` runs the next pending step of the project. Preparation steps are however not ran automatically because they require extra information, in which case, the script stops and tells you when `xy prep` or `z prep` is needed.
+
 ```bash
-CUDA_VISIBLE_DEVICES=0 python align_dataset_xy \
-  -cfg /path/to/main_config.json \
-  -c 4
+python run_alignment.py -g 0 -p /path/to/project_dir -c 4
 ```
 
-### 2. Z Alignment (Cross-Slice Alignment)
+Check where a project stands with:
 
-**Prepare configuration**:
 ```bash
-python prep_config_z.py \
-  -p /path/to/project_dir \
-  -cfg-z /path/to/z_config.json \
-  -c 4
+python scripts/project_status.py -p /path/to/project_dir
 ```
 
-**Execute alignment**:
-```bash
-CUDA_VISIBLE_DEVICES=0,1 python align_dataset_z.py \
-  -cfg /path/to/config/z_config/ \
-  -cfg-z /path/to/z_config.json \
-  -c 4 \
-  -ds 10
-```
+### Inspect results
 
-### 3. Inspect Results
+Data can be inspected at any stage through your browser with Neuroglancer:
 
 ```bash
 python inspect_dataset.py -d /path/to/output.zarr/dataset
 ```
 
-See [docs](/docs/visualization.md) for more details on how to use `inspect_dataset.py`.
+Pointing -d to the container root shows the final output if it exists, otherwise all XY aligned stacks. It can also point to a single dataset or to xy_intermediate. 
+Open the printed link into a browser to open a Neuroglancer viewer. The data will appear once loaded into memory. 
+
+* `--bbox` min_z max_z [min_y max_y min_x max_x]: only load part of the data. Data is loaded into memory, so prefer this or the downsampled output (10x_<project_name>) for large datasets.
+* `--mode all_ds_xy_first_z`: only show the first slice of each XY stack, a quick check of stitching.
+* `--print-shape`: only print the dataset shape and exit.
+* `--port`: Neuroglancer port (default: 55555). The viewer is bound to localhost, so forward the port when working on a remote machine.
+
+### Flags
+
+Main flags used by `run_alignment.py`. Run `python run_alignment.py <step> <substep> --help` for the full list.
+
+| Flag | Steps | Description |
+|------|-------|-------------|
+| `-p`, `--project-dir` | all | Project directory holding configurations, progress, and outputs. |
+| `-c`, `--cores` | all | Number of threads to use for parallel steps. |
+| `-g`, `--gpu` | all | GPU ID(s) to use, e.g. `0` or `0,1`. Default: `CUDA_VISIBLE_DEVICES`. |
+| `--verbose` | all | Print debug logs. |
+| `-i`, `--input_dir` | `xy prep` | Directory(ies) containing the raw tiles to use as input. Several directories are concatenated along Z in the order given. |
+| `-r`, `--resolution` | `xy prep` | XY resolution of the tileset to align. Used to find tiles in the input directory. |
+| `-o`, `--output_name` | `xy prep` | Name of the output zarr container. Default: project directory name. |
+| `--mode` | `xy prep` | How to parse tile file names (see [io modes](/io/BACKENDS.md)). Default: `volumescope`. |
+| `-cfg-z`, `--config-z` | `z prep` | JSON file with the Z alignment parameters (flow, mesh, rendering). |
+| `--exclude` | `z prep` | Patterns of datasets to leave out of Z alignment. |
+| `-ds`, `--downsample-scale` | `z prep` | Downsampling factor of the inspection store. Default: 10. |
+| `--force-overwrite` | `xy prep`, `xy fuse`, `z prep` | Overwrite existing configuration files without prompting. |
+| `--overwrite` | `xy align`, `xy fuse` | Overwrite existing output datasets. |
+| `--start-over` | `xy align`, `z transform`, `z flow`, `z render` | Wipe all progress and restart. |
+| `--wipe-progress` | `xy align`, `xy fuse`, `z transform`, `z flow`, `z render` | Wipe progress of specific stack(s) before starting. |
 
 ## Configuration
 
-Documentation about configuration files can be found [here](/docs/config.md).
-
-## API Usage
+Documentation about configuration files can be found [here](/docs/CONFIG.md).
 
 ## License
 
