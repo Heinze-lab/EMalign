@@ -1,8 +1,6 @@
 ''' Utilities for alignment of stacks along Z axis.'''
 
 import json
-from emalign.arrays.utils import resample
-from emalign.io.store import find_ref_slice, open_store
 import logging
 import networkx as nx
 import numpy as np
@@ -14,12 +12,12 @@ from cv2 import warpAffine
 from glob import glob
 from tqdm import tqdm
 
-from ..io.store import get_store_attributes
+from ..io.store import get_store_attributes, find_ref_slice, open_store
 from ..io.process.mask import compute_greyscale_mask
-from ..arrays.sift import estimate_transform_sift
+from ..arrays.sift import estimate_transform_sift, SIFT_SCALES
+from ..align_z.warp_hotfix import SHRT_MAX, warp_affine_tiled
+from ..arrays.utils import resample
 
-
-from ..arrays.sift import SIFT_SCALES
 N_CANDIDATE_SLICES = 3    # Number of slice pairs to try per transition before rejecting it
 
 
