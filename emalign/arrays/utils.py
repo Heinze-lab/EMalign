@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-def resample(array, ratio):
+def resample(array, ratio=None, shape=None):
     '''
     Resize an array by a scaling ratio using OpenCV interpolation.
 
@@ -29,7 +29,7 @@ def resample(array, ratio):
     - Boolean arrays are converted to uint8, resized, then converted back to bool
     - Returns original array without copying if ratio == 1
     '''
-    if ratio <= 0:
+    if shape is None and ratio <= 0:
         raise ValueError(f"Ratio must be positive, got {ratio}")
 
     if ratio == 1:
@@ -37,9 +37,15 @@ def resample(array, ratio):
 
     if array.dtype == bool:
         # cv2.resize doesn't want boolean
-        array = cv2.resize(array.astype(np.uint8), None, fx=ratio, fy=ratio, interpolation=cv2.INTER_NEAREST).astype(bool)
+        if ratio is not None and shape is None:
+            array = cv2.resize(array.astype(np.uint8), None, fx=ratio, fy=ratio, interpolation=cv2.INTER_NEAREST).astype(bool)
+        elif ratio is None and shape is not None:
+            array = cv2.resize(array.astype(np.uint8), shape[::-1], interpolation=cv2.INTER_NEAREST).astype(bool)
     else:
-        array = cv2.resize(array, None, fx=ratio, fy=ratio)
+        if ratio is not None and shape is None:
+            array = cv2.resize(array, None, fx=ratio, fy=ratio)
+        elif ratio is None and shape is not None:
+            array = cv2.resize(array, shape[::-1])
     return array
 
 
