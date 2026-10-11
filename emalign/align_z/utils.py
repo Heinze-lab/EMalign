@@ -473,6 +473,11 @@ def compute_alignment_path(datasets,
     return root_node, paths, reverse_z, ds_bounds
 
 
+def _warp_slice(s, M, canvas_shape):
+    dsize = (int(canvas_shape[1]), int(canvas_shape[0]))
+    warp = warp_affine_tiled if max(*s.shape, *dsize) > SHRT_MAX else warpAffine
+    return warp(s, M[:2], dsize)
+
 def determine_initial_offset(datasets, paths):
     '''Estimate cumulative XY offset needed to accommodate drift across alignment paths.
 
@@ -538,7 +543,7 @@ def determine_initial_offset(datasets, paths):
                                 f'the canvas padding.')
                 prev, prev_mask = _masked_slice(ds_curr, reverse=True)
             else:
-                prev = warpAffine(_masked_slice(ds_curr, reverse=True)[0], M, output_shape[::-1])
+                prev = _warp_slice(_masked_slice(ds_curr, reverse=True)[0], M, output_shape[::-1])
                 prev_mask = None  # The mask no longer matches the warped image
                 path_offset += prev_offset
             pbar.update(1)
