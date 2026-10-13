@@ -1,13 +1,18 @@
 import argparse
+import cv2
 import json
+import numpy as np
 import os
 import sys
 import tensorstore as ts
 
 from glob import glob
 
+from emalign.align_z.transform import to_3x3, shift_matrix
 from emalign.align_z.utils import get_ordered_datasets
-from emalign.io.store import open_store
+from emalign.arrays.utils import resample
+from emalign.arrays.warp_tiled import warp_affine_tiled, SHRT_MAX
+from emalign.io.store import open_store, get_store_attributes
 from emalign.io.store import find_ref_slice
 from emalign.visualize.nglancer import add_layers, start_nglancer_viewer
 from emalign.visualize.shader import *
@@ -63,12 +68,21 @@ def read_data(
     return data
 
 def resolve_dataset_path(dataset_path, mode=None):
-    """Resolve a user-provided path to a readable zarr dataset or dataset directory."""
+    '''Resolve a user-provided path to a readable zarr dataset or dataset directory.'''
     dataset_path = os.path.abspath(dataset_path)
 
     # If a direct dataset path is provided, use it as-is.
     if os.path.exists(os.path.join(dataset_path, '.zarray')):
         return dataset_path, mode
+    elif mode == 'transformed':
+        # Transforms are found in z_intermediate
+        if not dataset_path.endswith('z_intermediate'):
+            dataset_path = os.path.join(dataset_path, 'z_intermediate')
+        if os.path.isdir(dataset_path):
+            print(f'Using z_intermediate folder as input.')
+            return dataset_path, mode
+        else:
+            raise FileNotFoundError(f'z_intermediate subfolder does not exist: {dataset_path}')
     elif not dataset_path.endswith('.zarr') and not dataset_path.endswith('xy_intermediate'):
         raise ValueError('Please provide a valid dataset_path. Should be one of: zarr container (ending with ".zarr"), a zarr dataset, or the xy_intermediate level.')
 
@@ -138,6 +152,113 @@ def resolve_dataset_path(dataset_path, mode=None):
     else:
         raise FileNotFoundError(f'xy_intermediate subfolder does not exist: {xy_intermediate}')
 
+def get_transformed_datasets(z_intermediate, z_slices, yx_bbox=None, raw_trsf=False):
+    '''Find the datasets covering global z_slices and the bounding box of their warped slices.
+
+    Args:
+        z_intermediate (str): Path to z_intermediate.
+        z_slices (list of `int`): Z indices in the global frame.
+        yx_bbox (list of `int`, optional): min_y, max_y, min_x, max_x in the output canvas to crop to. Defaults to None.
+        raw_trsf (bool, optional): Use raw transforms instead of the final chained ones. Defaults to False.
+
+    Returns:
+        tuple: tuple of:
+            List of dict describing each dataset, ordered by Z offset.
+                'slices' maps the index in z_slices to the local z of the dataset.
+            Bounding box of the warped slices in the canvas: [min_y, max_y, min_x, max_x].
+    '''
+    z_intermediate = os.path.abspath(z_intermediate)
+    transform_dir = 'transform' if raw_trsf else 'transform_chained'
+
+    datasets = []
+    corners = []
+    output_shape = None
+    for trsf_path in sorted(glob(os.path.join(z_intermediate, transform_dir, '*'))):
+        trsf_attrs = get_store_attributes(trsf_path)
+        if trsf_attrs is None:
+            continue
+        if not raw_trsf and not trsf_attrs.get('final', False):
+            raise RuntimeError(f'{os.path.basename(trsf_path)}: Final transforms not found, run compute_transforms first.')
+        output_shape = trsf_attrs.get('output_shape')  # None for raw transforms
+
+        # Which of the requested slices does this dataset hold?
+        dataset_path = trsf_attrs['dataset_path']
+        z_offset = get_store_attributes(dataset_path)['voxel_offset'][0]
+        dataset_shape = open_store(dataset_path, mode='r').shape
+        slices = {i: z - z_offset for i, z in enumerate(z_slices) if 0 <= z - z_offset < dataset_shape[0]}
+        if not slices:
+            continue
+
+        # Raw transforms hold the scale and tell which slices have a valid transform
+        raw_trsf_path = trsf_path if raw_trsf else trsf_attrs['raw_transform_path']
+        raw_attrs = get_store_attributes(raw_trsf_path)
+        raw_transforms = open_store(raw_trsf_path, mode='r').read().result()
+        valid = ~np.isnan(raw_transforms).any(axis=(1, 2))
+        slices = {i: z for i, z in slices.items() if z < len(valid) and valid[z]}
+        if not slices:
+            continue
+
+        # Warp the slice corners to find where they land in the canvas
+        scale = raw_attrs.get('scale', 1)
+        transforms = open_store(trsf_path, mode='r').read().result()
+        y, x = np.ceil(np.array(dataset_shape[1:]) * scale)
+        xy = np.array([[0, 0, 1], [x, 0, 1], [x, y, 1], [0, y, 1]], dtype=np.float64).T
+        for z in slices.values():
+            corners.append((transforms[z].astype(np.float64) @ xy).T)
+
+        datasets.append({
+            'name': os.path.basename(trsf_path),
+            'dataset_path': dataset_path,
+            'transforms': transforms,
+            'scale': scale,
+            'z_offset': z_offset,
+            'slices': slices
+        })
+
+    if not datasets:
+        return datasets, None
+
+    corners = np.concatenate(corners)
+    x0, y0 = np.floor(corners.min(axis=0)).astype(int)
+    x1, y1 = np.ceil(corners.max(axis=0)).astype(int)
+    if output_shape is not None:
+        # Stay within the canvas
+        y0, x0 = max(y0, 0), max(x0, 0)
+        y1, x1 = min(y1, output_shape[0]), min(x1, output_shape[1])
+    if yx_bbox is not None:
+        y0, y1 = max(y0, yx_bbox[0]), min(y1, yx_bbox[1])
+        x0, x1 = max(x0, yx_bbox[2]), min(x1, yx_bbox[3])
+    if y1 <= y0 or x1 <= x0:
+        raise RuntimeError('Bounding box does not contain any data.')
+
+    return sorted(datasets, key=lambda d: d['z_offset']), [int(y0), int(y1), int(x0), int(x1)]
+
+def read_transformed_data(dataset_info, n_slices, bbox):
+    '''Read slices from an xy_intermediate dataset and warp them with their transform within bbox.
+
+    Slices that the dataset does not hold are left black.
+    Returns n_slices warped slices of the size of bbox ([min_y, max_y, min_x, max_x]).
+    '''
+    dataset = open_store(dataset_info['dataset_path'], mode='r', dtype=ts.uint8)
+    y0, y1, x0, x1 = bbox
+    shape = (y1 - y0, x1 - x0)
+    to_bbox = shift_matrix(-x0, -y0)
+
+    data = np.zeros((n_slices, *shape), dtype=np.uint8)
+    for i, z in dataset_info['slices'].items():
+        img = dataset[z].read().result()
+        if not img.any():
+            continue
+        img = resample(img, dataset_info['scale'])
+
+        M = (to_bbox @ to_3x3(dataset_info['transforms'][z][None].astype(np.float64))[0])[:2]
+        if max(*img.shape, *shape) > SHRT_MAX:
+            warp_fun = warp_affine_tiled
+        else:
+            warp_fun = cv2.warpAffine
+        data[i] = warp_fun(img, M, shape[::-1])
+    return data
+
 
 def inspect_dataset(
             dataset_path,
@@ -146,7 +267,9 @@ def inspect_dataset(
             project_configs=[],
             mode=None,
             bind_port=55555,
-            print_shape=False):
+            print_shape=False,
+            z_step=1,
+            raw_trsf=False):
     '''Display images from a zarr store.
 
     Loads images from a zarr store as defined by the data range, and display it in a neuroglancer viewer.
@@ -163,7 +286,10 @@ def inspect_dataset(
             z_transitions: Determines from project_configs all the z indices where a transition occurred (i.e. two stacks were aligned) and show images around transitions.
             all_ds_xy: Reads data within data_range from all the datasets found in the provided store.
             all_ds_xy_first_z: Same as all_ds_xy but shows only first slice containing data.
+            transformed: Reads slices in the bounding box Z range (global frame) every z_step from each xy_intermediate dataset with transforms and warps them.
         bind_port (int, optional): Port to bind the neuroglancer viewer to. Defaults to 55555.
+        z_step (int, optional): Step between Z slices within the bounding box, when mode=transformed. Defaults to 1.
+        raw_trsf (bool, optional): Use raw (pairwise) transforms instead of the final chained ones, when mode=transformed. Defaults to False.
     '''
     dataset_path, mode = resolve_dataset_path(dataset_path, mode=mode)
   
@@ -172,7 +298,7 @@ def inspect_dataset(
         print(f'Dataset shape (ZYX):\n    {dataset.shape}')
         sys.exit()
         
-    modes = ['z_transitions', 'all_ds_xy', 'all_ds_xy_first_z', 'flow']
+    modes = ['z_transitions', 'all_ds_xy', 'all_ds_xy_first_z', 'flow', 'transformed']
     if mode is not None and mode not in modes:
         raise ValueError(f'Invalid mode. Must be one of: {modes}')
 
@@ -210,7 +336,6 @@ def inspect_dataset(
 
         _, z_offsets = get_ordered_datasets(dataset_paths)
 
-        window = 20
         for z, _, _ in z_offsets:
             try:
                 d = read_data(dataset_path, bounding_box=bounding_box, keep_missing=keep_missing)
@@ -260,6 +385,23 @@ def inspect_dataset(
                    voxel_offsets=[voxel_offset]*len(channels),
                    names=[dataset_name + f'_{c}' for c in channel_names[:len(channels)]],
                    shaders=[FLOW_SHADER]*len(channels))
+    elif mode == 'transformed':
+        if bounding_box is None:
+            raise ValueError('Mode "transformed" requires a bounding box (global frame).')
+        z_slices = list(range(bounding_box[0], bounding_box[1], z_step))
+        yx_bbox = bounding_box[2:] if len(bounding_box) > 2 else None
+        datasets, bbox = get_transformed_datasets(dataset_path, z_slices, yx_bbox=yx_bbox, raw_trsf=raw_trsf)
+        if not datasets:
+            raise RuntimeError(f'No dataset found with valid transforms for slices: {z_slices}')
+
+        for dataset_info in datasets:
+            d = read_transformed_data(dataset_info, len(z_slices), bbox)
+            add_layers([d],
+                       viewer,
+                       names=[dataset_info['name']],
+                       voxel_offsets=[[bbox[2], bbox[0], z_slices[0]]],
+                       visible=dataset_info == datasets[0],
+                       clear_viewer=False)
 
     input('All data loaded. Press ENTER to exit.')
 
@@ -300,7 +442,18 @@ if __name__ == '__main__':
                         dest='mode',
                         type=str,
                         default=None,
-                        help='Visualization mode. One of: z_transitions, all_ds_xy, all_ds_xy_first_z')
+                        help='Visualization mode. One of: z_transitions, all_ds_xy, all_ds_xy_first_z, flow, transformed')
+    parser.add_argument('--z-step',
+                        metavar='Z_STEP',
+                        dest='z_step',
+                        type=int,
+                        default=1,
+                        help='Step between Z slices within the bounding box to warp and display (mode transformed). Default: 1')
+    parser.add_argument('--raw-trsf',
+                        dest='raw_trsf',
+                        default=False,
+                        action='store_true',
+                        help='Use raw pairwise transforms instead of the final chained transforms (mode transformed).')
     parser.add_argument('--port',
                         metavar='PORT',
                         dest='bind_port',
