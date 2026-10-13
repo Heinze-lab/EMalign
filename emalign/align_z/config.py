@@ -15,10 +15,7 @@ REQUIRED_ALIGN_PLAN_FIELDS = [
     'root_stack',
     'paths',
     'reverse_order',
-    'root_offset',
-    'pad_offset',
-    'yx_target_resolution',
-    'dataset_local_bounds'
+    'yx_target_resolution'
 ]
 
 REQUIRED_DATASET_CONFIG_FIELDS = [
@@ -28,14 +25,12 @@ REQUIRED_DATASET_CONFIG_FIELDS = [
     'alignment_path',
     'reverse_order',
     'z_offset',
-    'xy_offset',
     'local_z_min',
     'local_z_max',
     'scale',
     'flow_config',
     'mesh_config',
     'warp_config',
-    'first_slice',
     'yx_target_resolution'
 ]
 
