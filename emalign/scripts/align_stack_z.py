@@ -23,7 +23,7 @@ from ..io.store import find_ref_slice, open_store, set_store_attributes, get_sto
 from ..arrays.utils import resample, pad_to_shape
 from ..io.progress import get_mongo_client, get_mongo_db, wipe_progress, check_progress, log_progress
 from ..io.process.mask import compute_greyscale_mask, mask_to_bbox
-from ..align_z.warp_hotfix import warp_affine_tiled
+from ..arrays.warp_tiled import warp_affine_auto
 
 
 logging.basicConfig(level=logging.INFO)
@@ -394,11 +394,8 @@ def align_stack_z(destination_path,
         # Transform data
         M = transform[z,:,:-1]
         if np.any(np.array(data.shape) > SHRT_MAX):
-            data = warp_affine_tiled(data, M, output_shape[::-1])
-            data_mask = warp_affine_tiled(data_mask.astype(np.uint8), M, output_shape[::-1]).astype(bool)
-        else:
-            data = cv2.warpAffine(data, M, output_shape[::-1])
-            data_mask = cv2.warpAffine(data_mask.astype(np.uint8), M, output_shape[::-1]).astype(bool)
+            data = warp_affine_auto(data, M, output_shape[::-1])
+        data_mask = warp_affine_auto(data_mask.astype(np.uint8), M, output_shape[::-1]).astype(bool)
         data_bbox = bounding_box.BoundingBox(start=(0, 0, 0), 
                                              size=(data.shape[-1], data.shape[-2], 1))
         

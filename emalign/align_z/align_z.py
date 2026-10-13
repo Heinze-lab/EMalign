@@ -17,12 +17,10 @@ from ..io.store import find_ref_slice, open_store, write_ndarray, get_store_attr
 from ..arrays.utils import resample, homogenize_arrays_shape, pad_to_shape
 from ..arrays.sift import estimate_transform_sift
 from ..arrays.overlap import get_overlap_ref
-
-from .warp_hotfix import warp_affine_tiled
+from ..arrays.warp_tiled import warp_affine_tiled, SHRT_MAX
 
 
 PAD_OVERLAP = 1000
-SHRT_MAX = 32767
 
 
 def _get_flow_stores(dataset_path, dataset_name, destination_path,

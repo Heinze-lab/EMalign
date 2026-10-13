@@ -1,4 +1,3 @@
-
 import argparse
 import cv2
 import logging
@@ -6,31 +5,26 @@ import numpy as np
 import os
 import sys 
 import tensorstore as ts
-from tqdm import tqdm
 
 from concurrent.futures import ThreadPoolExecutor
 from connectomics.common import bounding_box
 from inspect import signature 
 from sofima.warp import ndimage_warp
+from tqdm import tqdm
 
 from emalign.align_dataset_z import load_and_validate_configs
-from emalign.align_z.warp_hotfix import warp_affine_tiled
+from emalign.arrays.warp_tiled import warp_affine_tiled, SHRT_MAX
 from emalign.align_z.transform import to_3x3, shift_matrix 
 from emalign.io.progress import get_mongo_client, get_mongo_db, log_progress, wipe_progress, check_progress 
 from emalign.io.process.mask import mask_to_bbox
 from emalign.io.store import open_store, get_store_attributes, set_store_attributes, write_data
 from emalign.io.utils import get_dataset_name, get_zarr_root, load_slice
-from emalign.utils.logging_utils import setup_logging
 
 logger = logging.getLogger(__name__)
 
-SHRT_MAX = 32767
 CHUNK_SIZE = [1, 1024, 1024]  # For store creation
 DOWNSAMPLE_SCALE = 10  # For creation of the downsampled inspection store
 Z_RESOLUTION = 50 # nm
-
-logging.basicConfig(level=logging.INFO)
-setup_logging(logging.INFO)
 
 def render_slice(
         image,
@@ -454,7 +448,6 @@ if __name__ == '__main__':
         description='Render a dataset based on pre-computed non-linear transformation.',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-
 
     args = add_parser_arguments(parser).parse_args()
 

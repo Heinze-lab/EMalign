@@ -15,7 +15,7 @@ from tqdm import tqdm
 from ..io.store import get_store_attributes, find_ref_slice, open_store
 from ..io.process.mask import compute_greyscale_mask
 from ..arrays.sift import estimate_transform_sift, SIFT_SCALES
-from ..align_z.warp_hotfix import SHRT_MAX, warp_affine_tiled
+from ..arrays.warp_tiled import SHRT_MAX, warp_affine_tiled
 from ..arrays.utils import resample
 
 N_CANDIDATE_SLICES = 3    # Number of slice pairs to try per transition before rejecting it

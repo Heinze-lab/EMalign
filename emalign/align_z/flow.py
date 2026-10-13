@@ -15,7 +15,7 @@ from connectomics.common import bounding_box
 from emalign.align_z.transform import (to_3x3, update_bbox,
                                        compute_global_bbox, shift_matrix)
 from emalign.align_z.warp_hotfix import warp_affine_tiled
-from emalign.io.utils import load_slice, load_reference_slice
+from emalign.io.utils import load_slice, load_reference_slice, warp_slice
 from emalign.arrays.utils import pad_to_shape
 from emalign.io.progress import get_mongo_client, get_mongo_db, log_progress, check_progress
 from emalign.io.store import write_ndarray, open_store, get_store_attributes, set_store_attributes
@@ -439,7 +439,7 @@ def compute_flow_stack(dataset_path,
         z_ref = previous[-1]
         if not align_to_reference:
             # Load the corresponding slice within this dataset
-            ref_slice = _warp_slice(load_slice(dataset, dataset_mask, z_ref, mov_flow_scale),
+            ref_slice = warp_slice(load_slice(dataset, dataset_mask, z_ref, mov_flow_scale),
                                     transforms[z_ref], canvas_shape)
         else:
             # Load the corresponding slice in the reference dataset
@@ -457,7 +457,7 @@ def compute_flow_stack(dataset_path,
 
         if reference_dataset is None:
             # No reference, the first slice is the anchor and gets no flow
-            ref_slice = _warp_slice(load_slice(dataset, dataset_mask, first_z, mov_flow_scale),
+            ref_slice = warp_slice(load_slice(dataset, dataset_mask, first_z, mov_flow_scale),
                                     transforms[first_z], canvas_shape)
             log_progress(db, dataset_name, step_name, first_z + z_offset - z_min, first_z,
                         {'anchor': True, 'scale': scale, 'skipped': False})
@@ -467,7 +467,7 @@ def compute_flow_stack(dataset_path,
             # Get the last non-empty slice of the reference as anchor, as for the transforms
             ref_slice = load_reference_slice(reference, reference_mask, None,
                                               ref_flow_scale, reverse=True)
-            ref_slice = _warp_slice(ref_slice, ref_transforms[ref_slice['z']], canvas_shape)
+            ref_slice = warp_slice(ref_slice, ref_transforms[ref_slice['z']], canvas_shape)
         else:
             # The whole dataset will be aligned to the reference
             # We look for the slice at the right offset
@@ -545,7 +545,7 @@ def compute_flow_stack(dataset_path,
                          {'scale': scale, 'valid': False, 'skipped': True})
         else:
             # Process the data
-            mov_slice = _warp_slice(mov_slice, transforms[z], canvas_shape)
+            mov_slice = warp_slice(mov_slice, transforms[z], canvas_shape)
 
             # Compute flow
             flow = _compute_flow_slice_blockwise(

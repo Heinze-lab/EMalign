@@ -1,8 +1,10 @@
 import os
+import numpy as np
 
 from emalign.arrays.utils import resample
 from emalign.io.process.mask import compute_greyscale_mask
 from emalign.io.store import find_ref_slice
+from emalign.arrays.warp_tiled import warp_affine_auto
 import tensorstore as ts
 
 
@@ -42,6 +44,13 @@ def load_slice(dataset, dataset_mask, z, scale, compute_mask=True):
         mask = None
     return {'z': z, 'img': img, 'mask': mask, 'empty': False}
 
+def warp_slice(s, M, canvas_shape):
+    '''Warp a loaded slice + mask into the flow canvas.'''
+    if s['empty']:
+        return s
+    img = warp_affine_auto(s['img'], M[:2], canvas_shape)
+    mask = warp_affine_auto(s['mask'].astype(np.uint8), M[:2], canvas_shape).astype(bool)
+    return s | {'img': img, 'mask': mask}
 
 def load_reference_slice(reference, reference_mask, z, scale, reverse=False):
     '''Load the closest non-empty slice of the reference + its mask, and resample.
