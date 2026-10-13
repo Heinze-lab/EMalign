@@ -1,19 +1,3 @@
-'''Fuse XY aligned stacks that overlap on the same Z slices.
-
-After XY alignment, several stacks may cover the same Z slices. Z alignment expects one
-image per slice, so overlapping stacks are stitched together into a single fused stack and only
-that fused stack is used from then on. Stacks that cannot be matched are left alone: they likely 
-belong to different alignment paths, which Z alignment resolves.
-
-Configuration files are generated on the first run into project_dir/config/fuse_config/ and reused
-afterwards, because detecting overlaps runs SIFT over full resolution slices.
-
-Usage:
-    CUDA_VISIBLE_DEVICES=0 python emalign.scripts.fuse_stacks_xy \\
-        -p /path/to/project_dir \\
-        -c 4
-'''
-
 import os
 import warnings
 # Prevent printing the following warning, which does not seem to be an issue for the code to run properly:
@@ -40,10 +24,7 @@ from emalign.io.process.mask import compute_greyscale_mask
 from emalign.io.progress import get_mongo_client, get_mongo_db, log_progress, check_progress, wipe_progress
 from emalign.io.store import get_store_attributes, open_store, set_store_attributes, write_data
 
-
-logging.basicConfig(level=logging.INFO)
-logging.getLogger('absl').setLevel(logging.WARNING)
-logging.getLogger('jax._src.xla_bridge').setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
 
 # Constants
 NUM_WORKERS = 1
@@ -108,7 +89,7 @@ def prep_config_fuse(project_dir,
     if not force_overwrite:
         _, group_configs = load_fuse_plan(project_dir)
         if group_configs is not None:
-            logging.info(f'Loaded {len(group_configs)} group(s) of overlapping stacks from {config_dir}')
+            logger.info(f'Loaded {len(group_configs)} group(s) of overlapping stacks from {config_dir}')
             return group_configs
 
     with open(main_config_path, 'r') as f:
@@ -118,7 +99,7 @@ def prep_config_fuse(project_dir,
     if not project_name:
         project_name = os.path.basename(main_config['output_path']).rstrip('.zarr')
 
-    logging.info('Looking for stacks overlapping on the same Z slices...')
+    logger.info('Looking for stacks overlapping on the same Z slices...')
     group_configs = create_configs_fused_stacks(main_config_path, scale=scale)
 
     os.makedirs(config_dir, exist_ok=True)
@@ -154,7 +135,7 @@ def prep_config_fuse(project_dir,
     with open(os.path.join(config_dir, '00_fuse_plan.json'), 'w') as f:
         json.dump(plan, f, indent=2)
 
-    logging.info(f'Configuration files were created at {config_dir}')
+    logger.info(f'Configuration files were created at {config_dir}')
     return group_configs
 
 
@@ -214,7 +195,7 @@ def fuse_stacks_group(config,
     db = get_mongo_db(client, project_name)
 
     if wipe_progress_flag:
-        logging.info(f'Wiping progress for stack: {destination_name}')
+        logger.info(f'Wiping progress for stack: {destination_name}')
         wipe_progress(db, destination_name)
 
         # Since we wipe progress, we also want to make sure that all old data will be overwritten properly
@@ -236,11 +217,11 @@ def fuse_stacks_group(config,
 
     # Skip if already fully processed
     if os.path.exists(attrs_path) and not overwrite:
-        logging.info(f'Skipping {destination_name} because it was already processed.')
+        logger.info(f'Skipping {destination_name} because it was already processed.')
         return False
 
     if overwrite:
-        logging.warning(f'{destination_name}: existing dataset will be deleted and fused from scratch.')
+        logger.warning(f'{destination_name}: existing dataset will be deleted and fused from scratch.')
 
     #---------- Open the stacks to fuse ----------#
     stacks = []
@@ -300,7 +281,7 @@ def fuse_stacks_group(config,
 
     n_skip = z_shape - len(slices_to_process)
     if n_skip:
-        logging.info(f'{destination_name}: Skipping {n_skip} already-processed slices')
+        logger.info(f'{destination_name}: Skipping {n_skip} already-processed slices')
 
     n_fused = 0
     n_single = 0
@@ -362,7 +343,7 @@ def fuse_stacks_group(config,
                 # it, typically as a TypeError on a transform that was never estimated, or an
                 # IndexError on an empty overlap. A single bad slice must not abort the whole stack.
                 errors.append(f'{stack["name"]}: {type(e).__name__}: {e}')
-                logging.warning(f'{destination_name}: could not fuse {stack["name"]} at z = '
+                logger.warning(f'{destination_name}: could not fuse {stack["name"]} at z = '
                                 f'{global_slice_index}, images may not match ({type(e).__name__}: {e})')
 
         if canvas is None:
@@ -375,7 +356,7 @@ def fuse_stacks_group(config,
             # alignment still receives exactly one image for it.
             name, canvas, canvas_mask = _best_image(candidates, img_q_fun)
             unfused_slices.append(global_slice_index)
-            logging.warning(f'{destination_name}: z = {global_slice_index} written unfused, keeping {name}')
+            logger.warning(f'{destination_name}: z = {global_slice_index} written unfused, keeping {name}')
         else:
             n_fused += 1
 
@@ -406,14 +387,14 @@ def fuse_stacks_group(config,
     pbar.set_description(f'{destination_name}: done')
 
     if slices_to_process:
-        logging.info(f'{destination_name}: Fused {n_fused}/{len(slices_to_process)} slices.')
+        logger.info(f'{destination_name}: Fused {n_fused}/{len(slices_to_process)} slices.')
         if n_single:
-            logging.info(f'{destination_name}: {n_single} slice(s) were covered by a single stack.')
+            logger.info(f'{destination_name}: {n_single} slice(s) were covered by a single stack.')
         if unfused_slices:
-            logging.warning(f'{destination_name}: {len(unfused_slices)} slice(s) written unfused: '
+            logger.warning(f'{destination_name}: {len(unfused_slices)} slice(s) written unfused: '
                             f'{_format_slices(unfused_slices)}')
         if empty_slices:
-            logging.info(f'{destination_name}: {len(empty_slices)} empty slice(s): '
+            logger.info(f'{destination_name}: {len(empty_slices)} empty slice(s): '
                          f'{_format_slices(empty_slices)}')
 
     #---------- Write attributes ----------#
@@ -472,7 +453,7 @@ def fuse_dataset_xy(project_dir,
         config_path = os.path.join(project_dir, 'config/xy_config/main_config.json')
         if not os.path.exists(config_path):
             raise FileNotFoundError(f'Main config file not found in the project directory: {config_path}')
-        logging.info(f'Config file location was determined from project directory:\n{config_path}\n')
+        logger.info(f'Config file location was determined from project directory:\n{config_path}\n')
 
     with open(config_path, 'r') as f:
         main_config = json.load(f)
@@ -487,7 +468,7 @@ def fuse_dataset_xy(project_dir,
     # Optional: metric deciding which image ends up on top. See resolve_img_q_fun for accepted values.
     img_q_fun = resolve_img_q_fun(main_config.get('img_on_top', DEFAULT_IMG_Q_FUN))
     if img_on_top == 'auto' and img_q_fun is None:
-        logging.warning(f'"img_on_top" in the main config does not define a quality metric. '
+        logger.warning(f'"img_on_top" in the main config does not define a quality metric. '
                         f'Falling back to "{DEFAULT_IMG_Q_FUN}" to decide which image goes on top.')
         img_q_fun = resolve_img_q_fun(DEFAULT_IMG_Q_FUN)
 
@@ -497,15 +478,15 @@ def fuse_dataset_xy(project_dir,
                                      force_overwrite=force_overwrite)
 
     if not group_configs:
-        logging.info('No overlapping stacks were found: there is nothing to fuse.')
+        logger.info('No overlapping stacks were found: there is nothing to fuse.')
         return
 
-    logging.info(f'Fusing {len(group_configs)} group(s) of overlapping stacks:')
+    logger.info(f'Fusing {len(group_configs)} group(s) of overlapping stacks:')
     for config in group_configs:
         sources = ' + '.join(config.get('fused_from') or fused_from(config))
-        logging.info(f'    z {config["zmin"]}-{config["zmax"]}: {sources} -> {config["destination_name"]}')
-    logging.info(f'Target resolution (yx): {target_res}')
-    logging.info(f'Number of cores used for rendering: {num_workers}\n')
+        logger.info(f'    z {config["zmin"]}-{config["zmax"]}: {sources} -> {config["destination_name"]}')
+    logger.info(f'Target resolution (yx): {target_res}')
+    logger.info(f'Number of cores used for rendering: {num_workers}\n')
 
     pbar = tqdm(group_configs, position=1, desc='Fusing stacks', dynamic_ncols=True, leave=True)
     for config in pbar:
@@ -525,8 +506,8 @@ def fuse_dataset_xy(project_dir,
                           wipe_progress_flag=(destination_name in wipe_progress_stacks),
                           num_workers=num_workers)
 
-    logging.info(f'Done! All {len(group_configs)} group(s) of stacks were fused.')
-    logging.info(f'\n\nTo prepare Z alignment:\npython emalign.prep_config_z -p {project_dir} -cfg-z <config_z.json>')
+    logger.info(f'Done! All {len(group_configs)} group(s) of stacks were fused.')
+    logger.info(f'\n\nTo prepare Z alignment:\npython emalign.prep_config_z -p {project_dir} -cfg-z <config_z.json>')
 
 
 def _match_shape(array, shape):
@@ -626,6 +607,9 @@ def add_parser_arguments(parser):
 
 
 if __name__ == '__main__':
+    
+    from emalign.utils.logging_utils import setup_logging
+    setup_logging(logging.INFO)
 
     parser = argparse.ArgumentParser(
         description='Fuse XY aligned stacks that overlap on the same Z slices, so that Z alignment\n'

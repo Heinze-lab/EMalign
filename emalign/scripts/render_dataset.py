@@ -22,6 +22,7 @@ from emalign.io.store import open_store, get_store_attributes, set_store_attribu
 from emalign.io.utils import get_dataset_name, get_zarr_root, load_slice
 from emalign.utils.logging_utils import setup_logging
 
+logger = logging.getLogger(__name__)
 
 SHRT_MAX = 32767
 CHUNK_SIZE = [1, 1024, 1024]  # For store creation
@@ -173,7 +174,7 @@ def render_stack(
             break
     if first_z is None:
         # Everything was processed already
-        logging.info(f'{dataset_name}: All slices were already rendered.')
+        logger.info(f'{dataset_name}: All slices were already rendered.')
         return
 
     # Cache slices for processing
@@ -291,7 +292,7 @@ def render_dataset(
         raise FileNotFoundError(f'Configuration directory does not exist or is empty: {config_dir}\nDid you run prep_config_z?')
 
     # Validate config directory
-    logging.info(f'Loading configuration from: {config_dir}')
+    logger.info(f'Loading configuration from: {config_dir}')
     align_plan, dataset_configs = load_and_validate_configs(config_dir)
 
     # Extract key info from align plan
@@ -304,16 +305,16 @@ def render_dataset(
     if any(reverse_order):
         raise NotImplementedError('reverse_order not yet implemented.')
 
-    logging.info(f'Project: {project_name}')
-    logging.info(f'Root stack: {root_stack}')
-    logging.info(f'Number of alignment paths: {len(paths)}')
-    logging.info('ToDo list:')
+    logger.info(f'Project: {project_name}')
+    logger.info(f'Root stack: {root_stack}')
+    logger.info(f'Number of alignment paths: {len(paths)}')
+    logger.info('ToDo list:')
     mentioned = []
     for path in paths:
         for dataset_name in path:
             if dataset_name in mentioned:
                 continue
-            logging.info(f'    - {dataset_name}')
+            logger.info(f'    - {dataset_name}')
             mentioned.append(dataset_name)
 
     # Handle start_over
@@ -322,7 +323,7 @@ def render_dataset(
             input('WARNING: All render progress will be wiped and all datasets will be processed.\n' 
                   'Press ENTER to continue or CTRL+C to abort\n')
         except KeyboardInterrupt:
-            logging.info('\nAborted by user')
+            logger.info('\nAborted by user')
             sys.exit(0)
         wipe_progress_stacks = list(dataset_configs)
 
@@ -338,7 +339,7 @@ def render_dataset(
             if dataset_name not in dataset_configs:
                 raise RuntimeError(f'No configuration found for dataset: {dataset_name}')
             wipe_progress(db, dataset_name, step_name='render_z') # database progress 
-            logging.info(f'Wiped render progress for {dataset_name}')
+            logger.info(f'Wiped render progress for {dataset_name}')
 
     # Create or open destination
     zarr_path = get_zarr_root(align_plan['destination_path'])
@@ -381,8 +382,8 @@ def render_dataset(
         set_store_attributes(ds_destination, (get_store_attributes(ds_destination) or {}) | attrs |
                              {'resolution': ds_resolution, 'voxel_size': ds_resolution})
 
-    logging.info('Starting rendering...')
-    logging.info(f'Number of cores used for rendering: {num_workers}')
+    logger.info('Starting rendering...')
+    logger.info(f'Number of cores used for rendering: {num_workers}')
     params = signature(render_stack).parameters
     rendered = set()
     for path in paths:
@@ -410,8 +411,8 @@ def render_dataset(
             render_stack(**relevant_args)
             rendered.add(dataset_name)
 
-    logging.info('All the data was rendered and written!')
-    logging.info(f'Destination: {destination_path}')
+    logger.info('All the data was rendered and written!')
+    logger.info(f'Destination: {destination_path}')
 
 
 def add_parser_arguments(parser):
@@ -445,6 +446,9 @@ def add_parser_arguments(parser):
 
 
 if __name__ == '__main__':
+
+    from emalign.utils.logging_utils import setup_logging
+    setup_logging(logging.INFO)
 
     parser = argparse.ArgumentParser(
         description='Render a dataset based on pre-computed non-linear transformation.',

@@ -3,6 +3,8 @@ import importlib
 import logging
 import os
 
+from emalign.utils.logging_utils import setup_logging
+
 # Step modules load JAX, so they are only imported once CUDA_VISIBLE_DEVICES is set (see __main__).
 # Steps are given by name and resolved when needed.
 STEP_TO_FUNC = {
@@ -121,7 +123,7 @@ if __name__ == '__main__':
 
     # ---------- Run ----------
     args = vars(parser.parse_args())
-    logging.basicConfig(level=logging.DEBUG if args.pop('verbose') else logging.INFO)
+    setup_logging(level=logging.DEBUG if args.pop('verbose') else logging.INFO)
 
     auto_project_dir = args.pop('auto_project_dir')
     auto_num_workers = args.pop('auto_num_workers')

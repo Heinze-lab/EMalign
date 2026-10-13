@@ -20,14 +20,7 @@ from emalign.arrays.utils import pad_to_shape
 from emalign.io.progress import get_mongo_client, get_mongo_db, log_progress, check_progress
 from emalign.io.store import write_ndarray, open_store, get_store_attributes, set_store_attributes
 
-
-SHRT_MAX = 32767  # Largest image cv2.warpAffine can handle
-
-
-logging.basicConfig(level=logging.INFO)
-logging.getLogger('absl').setLevel(logging.WARNING)
-logging.getLogger('jax._src.xla_bridge').setLevel(logging.WARNING)
-
+logger = logging.getLogger(__name__)
 
 def combine_flow(
         flow, 
@@ -429,7 +422,7 @@ def compute_flow_stack(dataset_path,
             break
     if first_z is None:
         # Everything was processed already
-        logging.info(f'    All flows were already computed (scale={scale}).')
+        logger.info(f'    All flows were already computed (scale={scale}).')
         return
 
     # Resume from the last slice holding a valid transform
@@ -587,4 +580,4 @@ def compute_flow_stack(dataset_path,
     attrs['complete'] = True
     set_store_attributes(dataset_flow, attrs)
 
-    logging.info(f'    Flow computation done (scale={scale}). | Ignored slices: {n_ignored}. | Empty slices: {n_gap}.')
+    logger.info(f'    Flow computation done (scale={scale}). | Ignored slices: {n_ignored}. | Empty slices: {n_gap}.')

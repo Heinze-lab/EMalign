@@ -13,11 +13,8 @@ from emalign.io.progress import get_mongo_client, get_mongo_db, wipe_progress, l
 from emalign.io.store import open_store, find_ref_slice, get_store_attributes, set_store_attributes
 from emalign.scripts.compute_transforms import load_and_validate_configs
 from emalign.io.utils import get_zarr_root
-from emalign.utils.logging_utils import setup_logging
 
-
-logging.basicConfig(level=logging.INFO)
-setup_logging(logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Steps of this script, in order, and their name in the progress database
 STEPS = {'flow': 'flow_z', 'clean': 'flow_clean_z', 'mesh': 'mesh_relax_z'}
@@ -41,7 +38,7 @@ def compute_dataset_flow(
         raise FileNotFoundError(f'Configuration directory does not exist or is empty: {config_dir}\nDid you run prep_config_z?')
 
     # Validate config directory
-    logging.info(f'Loading configuration from: {config_dir}')
+    logger.info(f'Loading configuration from: {config_dir}')
     align_plan, dataset_configs = load_and_validate_configs(config_dir)
 
     # Extract key info from align plan
@@ -50,16 +47,16 @@ def compute_dataset_flow(
     reverse_order = align_plan['reverse_order']
     project_name = align_plan['project_name']
 
-    logging.info(f'Project: {project_name}')
-    logging.info(f'Root stack: {root_stack}')
-    logging.info(f'Number of alignment paths: {len(paths)}\n')
-    logging.info('ToDo list:')
+    logger.info(f'Project: {project_name}')
+    logger.info(f'Root stack: {root_stack}')
+    logger.info(f'Number of alignment paths: {len(paths)}\n')
+    logger.info('ToDo list:')
     mentioned = []
     for path in paths:
         for dataset_name in path:
             if dataset_name in mentioned:
                 continue
-            logging.info(f'    - {dataset_name}')
+            logger.info(f'    - {dataset_name}')
             mentioned.append(dataset_name)
     print()
 
@@ -76,7 +73,7 @@ def compute_dataset_flow(
             input('WARNING: All flow, clean-up and mesh progress will be wiped and all datasets will be processed.\n'
                   'Press ENTER to continue or CTRL+C to abort\n')
         except KeyboardInterrupt:
-            logging.info('\nAborted by user')
+            logger.info('\nAborted by user')
             sys.exit(0)
         wipe_progress_stacks = list(dataset_configs)
         wipe_steps = list(STEPS)
@@ -102,17 +99,17 @@ def compute_dataset_flow(
         order = list(STEPS)
         steps_to_wipe = order[min(order.index(s) for s in wipe_steps):]
         if set(steps_to_wipe) != set(wipe_steps):
-            logging.info(f'Later steps depend on the wiped ones, also wiping: '
+            logger.info(f'Later steps depend on the wiped ones, also wiping: '
                          f'{[s for s in steps_to_wipe if s not in wipe_steps]}')
 
         for dataset_name in datasets_to_wipe:
             for step in steps_to_wipe:
                 wipe_progress(db, dataset_name, step_name=STEPS[step]) # database progress
-            logging.info(f'Wiped {steps_to_wipe} progress for {dataset_name}')
+            logger.info(f'Wiped {steps_to_wipe} progress for {dataset_name}')
 
     #------ FIRST PASS: Compute flow ------
-    logging.info('Starting flow computation...')
-    logging.info(f'Number of cores used for computing flow: {num_workers}\n')
+    logger.info('Starting flow computation...')
+    logger.info(f'Number of cores used for computing flow: {num_workers}\n')
     params = signature(compute_flow_stack).parameters
     for i, path in enumerate(paths):
         prev_dataset = None
@@ -127,10 +124,11 @@ def compute_dataset_flow(
                     f'First dataset ({dataset_name}) of the path is not the root stack ({root_stack})'
 
             config['num_workers'] = num_workers
-            config['reference_dataset'] = prev_dataset
+            if not config.get('align_to_reference', False):
+                config['reference_path'] = prev_dataset
 
             # Compute flow at downsampled scale
-            logging.info(dataset_name)
+            logger.info(dataset_name)
             relevant_args = {k: v for k, v in config.items() if k in params}
             compute_flow_stack(**relevant_args)
 
@@ -143,17 +141,17 @@ def compute_dataset_flow(
     
     #------ SECOND PASS: Clean up flow ------
     # Combine both scales of flow
-    logging.info('Combining and cleaning up flow...')
+    logger.info('Combining and cleaning up flow...')
     dataset_names = set(np.concatenate(paths))
     cleaned = set()  # Datasets cleaned in this run, their mesh has to be relaxed again
     for dataset_name in dataset_names:
         if dataset_name not in dataset_configs:
             raise RuntimeError(f'No configuration found for dataset: {dataset_name}')
         
-        logging.info(dataset_name)
+        logger.info(dataset_name)
 
         if check_progress(db, dataset_name, STEPS['clean'], None):
-            logging.info(f'    Flow already cleaned up.')
+            logger.info(f'    Flow already cleaned up.')
             continue
 
         config = dataset_configs[dataset_name].copy()
@@ -179,8 +177,7 @@ def compute_dataset_flow(
                 patch_size=config['flow_config']['patch_size'],
                 max_magnitude=config['flow_config']['max_magnitude'],
                 max_deviation=config['flow_config']['max_deviation'],
-                ds_scale=ds_scale,
-                dataset_name=dataset_name
+                ds_scale=ds_scale
                 )
         final_flow = np.transpose(final_flow, [1, 0, 2, 3])
         final_flow_path = os.path.join(zarr_path, 'z_intermediate', f'flow_final', dataset_name)
@@ -195,7 +192,7 @@ def compute_dataset_flow(
 
     #------ THIRD PASS: Relax mesh ------
     # Relax mesh, carrying the state from one stack to the next along each path
-    logging.info('Relaxing mesh...')
+    logger.info('Relaxing mesh...')
     solved_maps = {}  # dataset_name -> (solved, start) or None if not loaded yet
     relaxed = set()  # Datasets relaxed in this run, the next stacks of their path depend on them
 
@@ -222,7 +219,7 @@ def compute_dataset_flow(
                 prev_dataset = dataset_name
                 continue
 
-            logging.info(dataset_name)
+            logger.info(dataset_name)
             ds_config = dataset_configs[dataset_name]
             stride = ds_config['flow_config']['stride']
             zarr_path = get_zarr_root(ds_config['destination_path'])
@@ -230,7 +227,7 @@ def compute_dataset_flow(
             # Relax again if its flow or the stack it starts from changed in this run
             if (check_progress(db, dataset_name, STEPS['mesh'], None)
                     and dataset_name not in cleaned and prev_dataset not in relaxed):
-                logging.info(f'{dataset_name}: Mesh already relaxed.')
+                logger.info(f'{dataset_name}: Mesh already relaxed.')
                 solved_maps[dataset_name] = None  # Loaded from file if needed
                 prev_dataset = dataset_name
                 continue
@@ -310,7 +307,7 @@ def compute_dataset_flow(
             relaxed.add(dataset_name)
             prev_dataset = dataset_name
 
-    logging.info('Done!')
+    logger.info('Done!')
 
 
 def add_parser_arguments(parser):
@@ -352,6 +349,9 @@ def add_parser_arguments(parser):
     return parser
 
 if __name__ == '__main__':
+    
+    from emalign.utils.logging_utils import setup_logging
+    setup_logging(logging.INFO)
 
     parser = argparse.ArgumentParser(
         description='Compute optical flow using pre-generated configuration files.\n'

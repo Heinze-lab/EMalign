@@ -63,7 +63,7 @@ def compute_dataset_transforms(
         raise FileNotFoundError(f'Configuration directory does not exist or is empty: {config_dir}\nDid you run prep_config_z?')
     
     # Validate config directory
-    logging.info(f'Loading configuration from: {config_dir}')
+    logger.info(f'Loading configuration from: {config_dir}')
     align_plan, dataset_configs = load_and_validate_configs(config_dir)
 
     # Extract key info from align plan
@@ -73,16 +73,16 @@ def compute_dataset_transforms(
     project_name = align_plan['project_name']
     destination_path = align_plan['destination_path']
 
-    logging.info(f'Project: {project_name}')
-    logging.info(f'Root stack: {root_stack}')
-    logging.info(f'Number of alignment paths: {len(paths)}\n')
-    logging.info('ToDo list:')
+    logger.info(f'Project: {project_name}')
+    logger.info(f'Root stack: {root_stack}')
+    logger.info(f'Number of alignment paths: {len(paths)}\n')
+    logger.info('ToDo list:')
     mentioned = []
     for path in paths:
         for dataset_name in path:
             if dataset_name in mentioned:
                 continue
-            logging.info(f'    - {dataset_name}')
+            logger.info(f'    - {dataset_name}')
             mentioned.append(dataset_name)
     print()
 
@@ -95,7 +95,7 @@ def compute_dataset_transforms(
             input('WARNING: All progress will be wiped and all datasets will be processed.\n'
                   'Press ENTER to continue or CTRL+C to abort\n')
         except KeyboardInterrupt:
-            logging.info('\nAborted by user')
+            logger.info('\nAborted by user')
             sys.exit(0)
 
         # Wipe progress for all datasets
@@ -108,11 +108,11 @@ def compute_dataset_transforms(
         for dataset_name in dataset_configs:
             wipe_progress(db, dataset_name, step_name='transform_z') # database progress
             wipe_progress_stacks.append(dataset_name)
-            logging.info(f'Wiped progress for {dataset_name}')
+            logger.info(f'Wiped progress for {dataset_name}')
 
     # First pass: compute raw in-stack transforms
-    logging.info('Starting transforms computation...')
-    logging.info(f'Number of cores used for computing transforms: {num_workers}\n')
+    logger.info('Starting transforms computation...')
+    logger.info(f'Number of cores used for computing transforms: {num_workers}\n')
     for i, path in enumerate(paths):
         prev_dataset = None
         for dataset_name in path:
@@ -131,7 +131,7 @@ def compute_dataset_transforms(
                 config['reference_path'] = prev_dataset
 
             # Start computing transforms
-            logging.info(dataset_name)
+            logger.info(dataset_name)
             params = signature(compute_transforms_stack).parameters
             relevant_args = {k: v for k, v in config.items() if k in params}
             compute_transforms_stack(**relevant_args)
@@ -162,7 +162,7 @@ def compute_dataset_transforms(
             output_shape
         )
 
-    logging.info('Done!')
+    logger.info('Done!')
 
 
 def add_parser_arguments(parser):
@@ -196,6 +196,9 @@ def add_parser_arguments(parser):
 
 
 if __name__ == '__main__':
+
+    from emalign.utils.logging_utils import setup_logging
+    setup_logging(logging.INFO)
 
     parser = argparse.ArgumentParser(
         description='Compute affine transforms using pre-generated configuration files.\n'
