@@ -1,4 +1,3 @@
-
 import os
 import argparse
 import logging
@@ -7,48 +6,11 @@ import sys
 
 from inspect import signature
 
-from emalign.align_z.config import load_align_plan, load_dataset_configs, validate_config_directory
+from emalign.align_z.config import load_and_validate_configs
 from emalign.align_z.transform import chain_transforms_path, compute_global_bbox, compute_transforms_stack, shift_transforms
-from emalign.io.store import set_store_attributes, get_store_attributes
 from emalign.io.progress import get_mongo_client, get_mongo_db, wipe_progress
-from emalign.utils.logging_utils import setup_logging
 
-
-logging.basicConfig(level=logging.INFO)
-setup_logging(logging.INFO)
-
-
-def load_and_validate_configs(config_dir):
-    '''Load and validate all configuration from a prepared config directory.
-
-    Args:
-        config_dir: Path to directory created by prep_config_z
-
-    Returns:
-        tuple: (align_plan, dataset_configs)
-            - align_plan: Contents of 00_align_plan.json
-            - dataset_configs: Dict of dataset_name -> config
-
-    Raises:
-        FileNotFoundError: If required files missing
-        ValueError: If configs are invalid or inconsistent
-    '''
-    # Validate first
-    is_valid, errors, warnings_list = validate_config_directory(config_dir)
-
-    for warning in warnings_list:
-        logging.warning(warning)
-
-    if not is_valid:
-        for error in errors:
-            logging.error(error)
-        raise ValueError(f'Invalid configuration directory: {config_dir}')
-
-    # Load configs
-    align_plan = load_align_plan(config_dir)
-    dataset_configs = load_dataset_configs(config_dir)
-
-    return align_plan, dataset_configs
+logger = logging.getLogger(__name__)
 
 
 def compute_dataset_transforms(

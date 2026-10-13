@@ -4,6 +4,7 @@ Configuration utilities for Z alignment.
 
 import datetime
 import json
+import logging
 import os
 from glob import glob
 
@@ -60,6 +61,38 @@ def validate_align_plan(plan_dict):
                          f'({len(plan_dict["reverse_order"])}) must have same length')
 
     return errors
+
+def load_and_validate_configs(config_dir):
+    '''Load and validate all configuration from a prepared config directory.
+
+    Args:
+        config_dir: Path to directory created by prep_config_z
+
+    Returns:
+        tuple: (align_plan, dataset_configs)
+            - align_plan: Contents of 00_align_plan.json
+            - dataset_configs: Dict of dataset_name -> config
+
+    Raises:
+        FileNotFoundError: If required files missing
+        ValueError: If configs are invalid or inconsistent
+    '''
+    # Validate first
+    is_valid, errors, warnings_list = validate_config_directory(config_dir)
+
+    for warning in warnings_list:
+        logging.warning(warning)
+
+    if not is_valid:
+        for error in errors:
+            logging.error(error)
+        raise ValueError(f'Invalid configuration directory: {config_dir}')
+
+    # Load configs
+    align_plan = load_align_plan(config_dir)
+    dataset_configs = load_dataset_configs(config_dir)
+
+    return align_plan, dataset_configs
 
 
 def validate_dataset_config(config_dict, config_path):
