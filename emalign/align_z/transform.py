@@ -504,30 +504,3 @@ def shift_matrix(shift_x, shift_y):
         [0, 1, shift_y],
         [0, 0, 1],
     ], dtype=np.float64)
-
-
-
-if __name__ == '__main__':
-
-    import json
-    logging.basicConfig(level=logging.INFO)
-    logging.getLogger('absl').setLevel(logging.WARNING)
-    logging.getLogger('jax._src.xla_bridge').setLevel(logging.WARNING)
-
-    config_path = '/mnt/hdd1/SRC/EMpipelines/EMalign/output_test/config/z_config/z_01_OV_2.json'
-    with open(config_path, 'r') as f:
-        config = json.load(f)
-
-    compute_transforms_stack(config['dataset_path'],
-                             config['dataset_name'],
-                             config['destination_path'],
-                             config['z_offset'],
-                             config['yx_target_resolution'],
-                             local_z_min=None,
-                             local_z_max=None,
-                             ignore_slices=(),
-                             project_name='TEST_NEW_TRSFM',
-                             mongodb_config_filepath=None,
-                             cv2_threads=16,
-                             cache_workers=2
-                             )
