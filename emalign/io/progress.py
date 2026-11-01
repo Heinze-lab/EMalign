@@ -36,13 +36,28 @@ def log_progress(db, collection_name, step_name, global_slice_index, local_slice
     }
     collection.insert_one(doc)
 
-def check_progress(db, collection_name, step_name, local_slice_index, doc_filter={}):
+def check_progress(db, collection_name, step_name, local_slice_index, doc_filter={}, return_timestamp=False):
     '''
     Checks if a slice has already been processed.
+    If return_timestamp, also returns the time it was last processed (None if it was not).
     '''
     collection = db[collection_name]
-    doc_filter |= {'step_name': step_name, 'local_slice': local_slice_index}
-    return collection.count_documents(doc_filter) > 0
+    doc_filter = doc_filter | {'step_name': step_name, 'local_slice': local_slice_index}
+    if not return_timestamp:
+        return collection.count_documents(doc_filter) > 0
+    doc = collection.find_one(doc_filter, sort=[('timestamp', -1)])
+    return doc is not None, (doc.get('timestamp') if doc is not None else None)
+
+def format_timestamp(timestamp):
+    '''
+    Formats a timestamp from the database in local time, e.g. 26.10.17 - 14:05.
+    '''
+    if timestamp is None:
+        return 'unknown date'
+    # Timestamps are stored in UTC, pymongo returns them without timezone
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=datetime.UTC)
+    return timestamp.astimezone().strftime('%y.%m.%d - %H:%M')
 
 def wipe_progress(db, collection_name, step_name=None):
     '''
