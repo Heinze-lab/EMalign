@@ -3,7 +3,7 @@ import numpy as np
 
 from emalign.arrays.utils import resample
 from emalign.io.process.mask import compute_greyscale_mask
-from emalign.io.store import find_ref_slice
+from emalign.io.store import find_ref_slice, get_store_attributes
 from emalign.arrays.warp_tiled import warp_affine_auto
 import tensorstore as ts
 
@@ -64,3 +64,12 @@ def load_reference_slice(reference, reference_mask, z, scale, reverse=False):
     else:
         mask = compute_greyscale_mask(img, downsample_factor=10)
     return {'z': z_ref, 'img': img, 'mask': mask, 'empty': False}
+
+def has_valid_transform(dataset_config):
+    '''Check that a dataset has ran through the transform step and has valid transform'''
+    zarr_path = get_zarr_root(dataset_config['destination_path'])
+    transform_path = os.path.join(zarr_path, 'z_intermediate', 'transform', dataset_config['dataset_name'])
+    trsf_attrs = get_store_attributes(transform_path)
+    if trsf_attrs is None:
+        return False
+    return bool(trsf_attrs.get('complete', False) and trsf_attrs.get('any_valid', False))
