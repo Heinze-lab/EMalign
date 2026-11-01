@@ -8,7 +8,7 @@ import tensorstore as ts
 
 from glob import glob
 
-from emalign.align_z.transform import to_3x3, shift_matrix
+from emalign.align_z.transform import get_valid_slices, to_3x3, shift_matrix
 from emalign.align_z.utils import get_ordered_datasets
 from emalign.arrays.utils import resample
 from emalign.arrays.warp_tiled import warp_affine_tiled, SHRT_MAX
@@ -193,14 +193,14 @@ def get_transformed_datasets(z_intermediate, z_slices, yx_bbox=None, raw_trsf=Fa
         raw_trsf_path = trsf_path if raw_trsf else trsf_attrs['raw_transform_path']
         raw_attrs = get_store_attributes(raw_trsf_path)
         raw_transforms = open_store(raw_trsf_path, mode='r').read().result()
-        valid = ~np.isnan(raw_transforms).any(axis=(1, 2))
+        transforms = open_store(trsf_path, mode='r').read().result()
+        valid = get_valid_slices(raw_transforms, transforms, 0, dataset_shape[0])
         slices = {i: z for i, z in slices.items() if z < len(valid) and valid[z]}
         if not slices:
             continue
 
         # Warp the slice corners to find where they land in the canvas
         scale = raw_attrs.get('scale', 1)
-        transforms = open_store(trsf_path, mode='r').read().result()
         y, x = np.ceil(np.array(dataset_shape[1:]) * scale)
         xy = np.array([[0, 0, 1], [x, 0, 1], [x, y, 1], [0, y, 1]], dtype=np.float64).T
         for z in slices.values():
