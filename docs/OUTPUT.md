@@ -1,3 +1,4 @@
+# Outputs
 The pipeline produces multiple files throughout alignment. Configuration files guide each alignment steps, while temporary datasets provide intermediate checkpoints and are all written in a zarr container at the root of the project directory.
 
 ```
@@ -34,7 +35,7 @@ project_dir/
 * `00_align_plan.json` contains ordered lists of datasets that are neighbors along the Z axis and should therefore be aligned to each other. 
 * `z_<dataset_name>.json` are one configuration file per stack. They each contain parameters required by SOFIMA for flow computations, mesh relaxation, and rendering. 
 
-For more details about the content of configuration files, see the dedicated [docs](/docs/CONFIG.md).
+For more details about the content of configuration files, see the dedicated [docs](CONFIG.md).
 
 ## Intermediate outputs
 
