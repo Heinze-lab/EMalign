@@ -44,7 +44,7 @@ Alignment can be split into two major steps:
 
 Run alignment with the `run_alignment.py` script. Every step takes the project directory (`-p`), where configurations, progress and outputs are kept. Use `--help` on any step for its full list of options.
 
-See docs about the resulting outputs [here](/docs/OUTPUT.md).
+See docs about the resulting outputs [here](docs/OUTPUT.md).
 
 ### Step by step
 
@@ -63,7 +63,7 @@ python run_alignment.py -g 0 z flow -p /path/to/project_dir -c 4
 python run_alignment.py -g 0 z render -p /path/to/project_dir -c 4
 ```
 
-`-g` selects the GPU(s) to use (e.g. `-g 0,1`). An example of Z parameters can be found in [config_z.json](emalign/config/config_z.json). See other flags below.
+`-g` selects the GPU(s) to use (e.g. `-g 0,1`). An example of Z parameters can be found in [config_z.json](https://github.com/Heinze-lab/EMalign/blob/main/emalign/config/config_z.json). See other flags below.
 
 ### Automatic mode
 
@@ -108,7 +108,7 @@ Main flags used by `run_alignment.py`. Run `python run_alignment.py <step> <subs
 | `-i`, `--input_dir` | `xy prep` | Directory(ies) containing the raw tiles to use as input. Several directories are concatenated along Z in the order given. |
 | `-r`, `--resolution` | `xy prep` | XY resolution of the tileset to align. Used to find tiles in the input directory. |
 | `-o`, `--output_name` | `xy prep` | Name of the output zarr container. Default: project directory name. |
-| `--mode` | `xy prep` | How to parse tile file names (see [io modes](/io/BACKENDS.md)). Default: `volumescope`. |
+| `--mode` | `xy prep` | How to parse tile file names (see [io modes](docs/BACKENDS.md)). Default: `volumescope`. |
 | `-cfg-z`, `--config-z` | `z prep` | JSON file with the Z alignment parameters (flow, mesh, rendering). |
 | `--exclude` | `z prep` | Patterns of datasets to leave out of Z alignment. |
 | `-ds`, `--downsample-scale` | `z prep` | Downsampling factor of the inspection store. Default: 10. |
@@ -119,7 +119,7 @@ Main flags used by `run_alignment.py`. Run `python run_alignment.py <step> <subs
 
 ## Configuration
 
-Documentation about configuration files can be found [here](/docs/CONFIG.md).
+Documentation about configuration files can be found [here](docs/CONFIG.md).
 
 ## License
 
