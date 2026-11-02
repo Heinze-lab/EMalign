@@ -2,9 +2,15 @@
   "scale_flow": 0.1,
   "flow": {
     "patch_size": 200,
-    "stride": 50,
+    "stride": 50
+  },
+  "clean": {
+    "min_peak_ratio": 1.6,
+    "min_peak_sharpness": 1.6,
+    "max_magnitude": 80,
     "max_deviation": 350,
-    "max_magnitude": 80
+    "max_gradient": 0,
+    "min_patch_size": 400
   },
   "mesh": {
     "dt": 0.001,
@@ -21,7 +27,7 @@
     "remove_drift": false
   },
   "warp": {
-    "work_size": 512,
+    "work_size": 1024,
     "overlap": 1
   }
 }
