@@ -16,8 +16,69 @@ from emalign.io.utils import load_reference_slice, load_slice
 
 IDENTITY = np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float64)
 
+# What each slice was aligned to, with align_to_reference. Otherwise it is the z of the
+# moving slice it was chained to.
+NO_REF = -2             # No transform: empty, ignored, failed or too far from the reference
+TO_REFERENCE = -1       # Matching slice of the reference
+FROM_OTHER_STACK = -3   # Slice of the previous stack, carried over (see read_carried_from)
 
-def _pairwise_transform(ref_img, ref_mask, mov_img, mov_mask):
+
+def read_carried_from(zarr_path, dataset_name):
+    '''Slice of another stack the first slices of this stack were chained to (FROM_OTHER_STACK),
+    as {'dataset_name', 'dataset_path', 'z', 'global_z', 'depth'}, or None.'''
+    attrs = get_store_attributes(os.path.join(zarr_path, 'z_intermediate', 'transform_ref', dataset_name))
+    return (attrs or {}).get('carried_from')
+
+
+def last_valid_slice(zarr_path, dataset_name, z_min, z_max):
+    '''Last slice of a stack holding a valid transform, and its number of hops to the reference,
+    as (z, depth), or None.'''
+    z_refs = read_transform_refs(zarr_path, dataset_name, z_max)
+    if z_refs is None:
+        return None
+    carried = read_carried_from(zarr_path, dataset_name)
+    for z in range(z_max - 1, z_min - 1, -1):
+        if z_refs[z] != NO_REF:
+            return z, chain_depth(z_refs, z, carried['depth'] if carried else 0)
+    return None
+
+
+def read_transform_refs(zarr_path, dataset_name, n):
+    '''What each slice was aligned to (see NO_REF), as an int array of length n, or None if
+    it was not recorded (stack computed before slices could chain across reference gaps).'''
+    store = open_store(os.path.join(zarr_path, 'z_intermediate', 'transform_ref', dataset_name), 
+                       mode='r', dtype=ts.int32, allow_missing=True)
+    if store is None:
+        return None
+    z_refs = np.full(n, NO_REF, dtype=np.int64)
+    stored = store.read().result()[:n, 0, 0]
+    z_refs[:len(stored)] = stored
+    return z_refs
+
+
+def chain_depth(z_refs, z, carried_depth=0):
+    '''Number of slice to slice hops between slice z and the reference.
+    carried_depth: depth of the slice of another stack chains may start from (FROM_OTHER_STACK).'''
+    depth = 0
+    while z_refs[z] >= 0:
+        z = z_refs[z]
+        depth += 1
+        if depth > len(z_refs):
+            raise RuntimeError(f'Slice {z}: circular chain of transforms.')
+    if z_refs[z] == FROM_OTHER_STACK:
+        depth += 1 + carried_depth
+    return depth
+
+
+def load_matching_reference(reference, reference_mask, z, scale):
+    '''Reference slice at z, empty if z is outside of the reference or blank.
+    There is no search: a slice from another depth would misplace the moving slice.'''
+    if not reference.domain.inclusive_min[0] <= z < reference.domain.exclusive_max[0]:
+        return {'z': z, 'img': None, 'mask': None, 'empty': True}
+    return load_slice(reference, reference_mask, z, scale)
+
+
+def _pairwise_transform(ref_img, ref_mask, mov_img, mov_mask, match_scale=1):
     '''Compute pairwise raw homology matrix mapping mov to ref, or None.'''
     for sift_scale in SIFT_SCALES:
         M, _, _, valid, _ = estimate_transform_sift_fast(
@@ -52,7 +113,16 @@ def compute_transforms_stack(dataset_path,
       - reference_path: the anchor is the last valid slice of the reference,
         then every slice still follows the previous one of this stack.
       - reference_path + align_to_reference: every slice is aligned to its
-        matching slice in the reference, found at z + reference_offset.
+        matching slice in the reference, found at z + reference_offset. If that
+        slice is missing or blank, the slice is aligned to the previous valid slice
+        of this stack instead (to the next one before the first slice that reached the
+        reference), and chained to it. A slice is at most max_gap hops away from
+        the reference, it gets no transform beyond that. What each slice was aligned
+        to is stored in z_intermediate/transform_ref, for chain_transforms_stack.
+        carry_slice is the last valid slice of the previous stack ({'dataset_name',
+        'dataset_path', 'z', 'global_z', 'depth'}, see last_valid_slice): if it is at most
+        max_gap slices before this stack, it is the previous slice of the first slices, so
+        that a stack starting without reference (e.g. a single slice) can still be placed.
     '''
 
     if num_workers > 0:
@@ -115,19 +185,76 @@ def compute_transforms_stack(dataset_path,
     
     def write_t(z, M):
         nonlocal dataset_trsf
-        dataset_trsf, _ = write_ndarray(dataset_trsf, np.asarray(M, np.float32), 
+        dataset_trsf, _ = write_ndarray(dataset_trsf, np.asarray(M, np.float32),
                                         z, resolve=False)
+
+    if align_to_reference:
+        # What each slice was aligned to (see NO_REF)
+        dataset_ref = open_store(
+            os.path.join(zarr_path, 'z_intermediate', 'transform_ref', dataset_name),
+            mode='a', dtype=ts.int32,
+            shape=[z_max, 1, 1], chunks=[1, 1, 1], axis_labels=['z', 'a', 'b'],
+            fill_value=NO_REF)
+
+    def write_r(z, z_ref):
+        nonlocal dataset_ref
+        if align_to_reference:
+            dataset_ref, _ = write_ndarray(dataset_ref, np.full((1, 1), z_ref, np.int32),
+                                           z, resolve=False)
+
+    # Slices without reference are chained to their neighbour
+    prev_slice = None   # Last slice holding a valid transform
+    prev_depth = 0      # Its number of hops to the reference
+
+    if align_to_reference and carry_slice is not None and not 0 < z_offset - carry_slice['global_z'] <= max_gap:
+        # Too far from this stack (or on the same slices) to stand for its previous slice
+        carry_slice = None
+
+    def load_carry_slice():
+        '''Carried slice of the previous stack, at its own resolution, or None.'''
+        if carry_slice is None:
+            return None
+        other_path = os.path.abspath(carry_slice['dataset_path'])
+        other = open_store(other_path, mode='r', dtype=ts.uint8)
+        other_mask = open_store(other_path + '_mask', mode='r', dtype=ts.bool, allow_missing=True)
+        other_res = get_store_attributes(other)['resolution'][-1]
+        other_scale = 1 if yx_target_resolution is None else other_res / yx_target_resolution
+        s = load_slice(other, other_mask, carry_slice['z'], other_scale * match_scale)
+        if s['empty']:
+            return None
+        set_store_attributes(dataset_ref, (get_store_attributes(dataset_ref) or {}) | {'carried_from': carry_slice})
+        return s | {'carried': True}
+
+    def prev_ref():
+        '''z_ref of a slice aligned to prev_slice.'''
+        return FROM_OTHER_STACK if prev_slice.get('carried', False) else prev_slice['z']
 
     # ---------- Check progress ----------
     first_z = z_min
     resume = False
+    timestamp = None
     for z in range(z_min, z_max):
-        if not check_progress(db, dataset_name, step_name, z):
+        done, timestamp = check_progress(db, dataset_name, step_name, z, return_timestamp=True)
+        if not done:
             if z != z_min:
                 if align_to_reference:
-                    # Every slice has its own reference, nothing to carry over
+                    # Carry over the last slice holding a valid transform, in case
+                    # the next slices have no reference
                     first_z = z
                     resume = True
+                    z_refs = read_transform_refs(zarr_path, dataset_name, z)
+                    if z_refs is not None:
+                        carried = read_carried_from(zarr_path, dataset_name)
+                        for z_prev in range(z - 1, z_min - 1, -1):
+                            if z_refs[z_prev] != NO_REF:
+                                prev_slice = load_slice(dataset, dataset_mask, z_prev,
+                                                        target_scale * match_scale)
+                                prev_depth = chain_depth(z_refs, z_prev, carried['depth'] if carried else 0)
+                                break
+                    if prev_slice is None:
+                        # Nothing valid behind us in this stack, the previous stack may stand for it
+                        prev_slice = load_carry_slice()
+                        prev_depth = carry_slice['depth'] if prev_slice is not None else 0
                     break
 
                 # Walk back to the last slice holding a valid transform
@@ -175,7 +302,12 @@ def compute_transforms_stack(dataset_path,
                 reference, reference_mask, None,
                 ref_scale, reverse=True
                 )
-        # else: each slice gets its own reference slice in the loop below
+        else:
+            # Each slice gets its own reference slice in the loop below. The previous stack
+            # stands for the previous slice of the first slices, if close enough.
+            set_store_attributes(dataset_ref, (get_store_attributes(dataset_ref) or {}) | {'carried_from': None})
+            prev_slice = load_carry_slice()
+            prev_depth = carry_slice['depth'] if prev_slice is not None else 0
 
         # Set attributes
         set_store_attributes(
@@ -220,6 +352,58 @@ def compute_transforms_stack(dataset_path,
     n_gap = 0
     n_failed = 0
     n_ignored = 0
+    n_chained = 0
+    n_no_ref = 0
+
+    def align_slice(ref_slice, mov_slice, z_ref, depth):
+        '''Match mov_slice to ref_slice, write and log the result. Returns whether it was found.'''
+        nonlocal n_failed
+        z = mov_slice['z']
+        result = _pairwise_transform(
+            ref_slice['img'], ref_slice['mask'],
+            mov_slice['img'], mov_slice['mask'],
+            match_scale
+            )
+        if result is not None:
+            M, sift_scale = result
+            # Back to target resolution pixels, the linear part is scale invariant
+            M[:, 2] /= match_scale
+
+            # Write to file
+            write_t(z, M)
+            write_r(z, z_ref)
+        else:
+            # Failed to find transform
+            sift_scale = None
+            write_t(z, np.full((2, 3), np.nan))
+            write_r(z, NO_REF)
+            n_failed += 1
+
+        metadata = {'valid_estimate': result is not None, 'scale': target_scale,
+                    'match_scale': match_scale, 'z_ref': int(ref_slice['z']), 'ref_scale': ref_scale,
+                    'skipped': result is None, 'sift_scale': sift_scale}
+        if align_to_reference:
+            # z_ref is in the reference, in this stack or in the previous stack
+            metadata |= {'aligned_to': {TO_REFERENCE: 'reference', FROM_OTHER_STACK: 'other_stack'}.get(z_ref, 'previous'),
+                         'chain_depth': depth}
+            if z_ref == FROM_OTHER_STACK:
+                metadata['carried_from'] = carry_slice['dataset_name']
+        log_progress(db, dataset_name, step_name, z + z_offset - z_min, z, metadata)
+        return result is not None
+
+    def skip_no_ref(z):
+        '''No reference within max_gap slices, the slice gets no transform.'''
+        nonlocal n_no_ref
+        write_t(z, np.full((2, 3), np.nan))
+        write_r(z, NO_REF)
+        n_no_ref += 1
+        log_progress(db, dataset_name, step_name, z + z_offset - z_min, z,
+                     {'no_reference': True, 'skipped': True})
+
+    # Slices without reference met before any slice reached it, aligned
+    # to the next valid slice once one does. Bounded by max_gap.
+    pending = []
+
     for z in tqdm(
         range(first_z, z_max), 
         total=z_max - first_z, 
@@ -233,14 +417,18 @@ def compute_transforms_stack(dataset_path,
         mov_slice = read_futures.pop(z).result()
         global_z = z + z_offset - z_min
 
-        if mov_slice['empty']: 
+        if mov_slice['empty']:
             # Empty slice. Skip this and compute transform across the gap
+            write_t(z, np.full((2, 3), np.nan))
+            write_r(z, NO_REF)
             n_gap += 1
             log_progress(db, dataset_name, step_name, global_z, z,
                          {'empty_slice': bool(mov_slice['empty']), 'skipped': True})
             continue
         if z in ignore_slices:
             # Skipped by user
+            write_t(z, np.full((2, 3), np.nan))
+            write_r(z, NO_REF)
             n_ignored += 1
             log_progress(db, dataset_name, step_name, global_z, z,
                          {'skipped': True})
@@ -264,17 +452,45 @@ def compute_transforms_stack(dataset_path,
             # Write to file
             write_t(z, M)
             if not align_to_reference:
+            if align_slice(ref_slice, mov_slice, None, None):
                 ref_slice = mov_slice   # Reference for next slice
-        else:
-            # Failed to find transform, so we keep the reference
-            sift_scale = None
-            n_failed += 1
+            # else: failed to find transform, so we keep the reference
+            continue
 
-        log_progress(db, dataset_name, step_name, global_z, z,
-                     {'valid_estimate': res is not None, 'scale': target_scale,
-                      'match_scale': match_scale, 'z_ref': int(ref_slice['z']), 'ref_scale': ref_scale,
-                      'skipped': res is None, 'sift_scale': sift_scale})
-        
+        # Matching slice in the reference, in global coordinates
+        ref_slice = load_matching_reference(
+            reference, reference_mask, z + reference_offset, ref_scale * match_scale)
+
+        if not ref_slice['empty']:
+            if align_slice(ref_slice, mov_slice, TO_REFERENCE, 0):
+                prev_slice, prev_depth = mov_slice, 0
+
+                # Slices waiting for the reference are chained to this one, closest first
+                next_slice, depth = mov_slice, 0
+                for p in pending[::-1]:
+                    n_chained += 1
+                    if align_slice(next_slice, p, next_slice['z'], depth + 1):
+                        next_slice, depth = p, depth + 1
+                pending = []
+            # else: failed, the previous slice stays the one to chain to
+        elif prev_slice is not None:
+            # No reference, chain to the previous valid slice if it is close enough to the reference
+            if prev_depth < max_gap:
+                n_chained += 1
+                if align_slice(prev_slice, mov_slice, prev_ref(), prev_depth + 1):
+                    prev_slice, prev_depth = mov_slice, prev_depth + 1
+            else:
+                skip_no_ref(z)
+        else:
+            # No reference and nothing to chain to yet, wait for a slice that reaches it
+            pending.append(mov_slice)
+            if len(pending) > max_gap:
+                # The first one will be too far from the reference
+                skip_no_ref(pending.pop(0)['z'])
+
+    # Slices that never met a slice reaching the reference
+    for p in pending:
+        skip_no_ref(p['z'])
 
     # Shutdown the read pool
     read_pool.shutdown()
@@ -419,8 +635,44 @@ def chain_transforms_stack(
             chained_transforms[i] = prev @ transforms[i]
             prev = chained_transforms[i]
     else:
-        # No need to chain transforms, the images are already aligned to a reference
-        chained_transforms = transforms
+        # Slices aligned to the reference need no chaining. Slices without reference were
+        # aligned to a neighbour, and are chained to it.
+        z_refs = read_transform_refs(zarr_path, dataset_name, len(transforms))
+        if z_refs is None:
+            z_refs = np.where(valid, TO_REFERENCE, NO_REF)
+
+        # Chains may start from a slice of the previous stack, chained before this one
+        carried = read_carried_from(zarr_path, dataset_name)
+        carried_M = None
+        if carried is not None and (z_refs == FROM_OTHER_STACK).any():
+            carried_M = _read_chained_transform(zarr_path, carried['dataset_name'], carried['z'])
+
+        chained_transforms = np.full_like(transforms, np.nan)
+        for z in np.flatnonzero(valid):
+            # Walk to the reference, then compose back. Chains are at most max_gap long.
+            chain = [z]
+            while z_refs[chain[-1]] >= 0 and len(chain) <= len(transforms):
+                chain.append(z_refs[chain[-1]])
+            start = {TO_REFERENCE: np.eye(3), FROM_OTHER_STACK: carried_M}.get(z_refs[chain[-1]])
+            if not all(valid[c] for c in chain) or start is None or np.isnan(start).any():
+                logging.warning(f'    {dataset_name}: Slice {z} is chained to a slice without transform '
+                                f'(ignored after transforms were computed?), it will not be placed.')
+                continue
+            # As in the chain above: final[z] = final[z_ref] @ raw[z]
+            M = start
+            for c in chain[::-1]:
+                M = M @ transforms[c]
+            chained_transforms[z] = M
+        valid &= ~np.isnan(chained_transforms).any(axis=(1, 2))
+
+    # Bbox of this stack, from the slices that are rendered only. Invalid slices inherit the
+    # previous transform (or are NaN with align_to_reference) and would only inflate it.
+    stack_bbox = None
+    if valid.any():
+        img_shape = np.array(dataset.shape[1:]) * target_scale
+        stack_bbox = update_bbox(None, chained_transforms[valid], img_shape, anchor_inv)
+    else:
+        logging.info(f'    {dataset_name}: No valid transform, the stack does not contribute to the output bbox.')
 
     # Update the global bbox
     bbox = update_bbox(bbox, chained_transforms, dataset.shape[1:], anchor_inv)

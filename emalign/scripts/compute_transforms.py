@@ -91,15 +91,35 @@ def compute_dataset_transforms(
             config['wipe_progress_flag'] = any([dataset_name == s for s in wipe_progress_stacks])
             if not config.get('align_to_reference', False):
                 config['reference_path'] = prev_dataset
+            else:
+                # The closest slice before this stack may stand for its previous slice
+                # (compute_transforms_stack checks the distance)
+                before = [c for c in carry_slices if c['global_z'] < config['z_offset']]
+                config['carry_slice'] = max(before, key=lambda c: c['global_z']) if before else None
 
             # Start computing transforms
             logger.info(dataset_name)
             params = signature(compute_transforms_stack).parameters
             relevant_args = {k: v for k, v in config.items() if k in params}
-            compute_transforms_stack(**relevant_args)
-            
-            prev_dataset = config['dataset_path']
+            success = compute_transforms_stack(**relevant_args)
+
+            if success and config.get('align_to_reference', False):
+                z_min = config.get('local_z_min') or 0
+                last = last_valid_slice(zarr_path, dataset_name, z_min, config['local_z_max'])
+                if last is not None:
+                    carry_slices.append({'dataset_name': dataset_name,
+                                         'dataset_path': config['dataset_path'],
+                                         'z': int(last[0]),
+                                         'global_z': int(last[0] + config['z_offset'] - z_min),
+                                         'depth': int(last[1])})
+
+            # If the previous dataset failed to be transformed, 
+            # we would have a broken link. Instead, let's use 
+            # the last dataset that worked
+            if success:
+                prev_dataset = config['dataset_path']
     
+    logger.info('Chaining transforms...')
     # Second pass: chain existing transforms throughout the whole dataset
     bbox = None
     for path in paths:
