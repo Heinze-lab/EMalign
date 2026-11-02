@@ -161,14 +161,15 @@ def render_stack(
     
     # ---------- Check progress ----------
     # Resume from the first slice not rendered yet, as for the transforms and flow
-    first_z = None
+    first_z = timestamp = None
     for z in range(z_min, z_max):
-        if not check_progress(db, dataset_name, step_name, z):
+        done, timestamp = check_progress(db, dataset_name, step_name, z, return_timestamp=True)
+        if not done:
             first_z = z
             break
     if first_z is None:
         # Everything was processed already
-        logger.info(f'{dataset_name}: All slices were already rendered.')
+        logger.info(f'    All slices were already rendered ({format_timestamp(timestamp)}).')
         return
 
     # Cache slices for processing
@@ -278,7 +279,8 @@ def render_dataset(
         project_dir,
         num_workers=0,
         start_over=False,
-        wipe_progress_stacks=None
+        wipe_progress_stacks=None,
+        auto_confirm=False
         ):
 
     config_dir = os.path.join(project_dir, 'config/z_config')
@@ -313,12 +315,13 @@ def render_dataset(
 
     # Handle start_over
     if start_over:
-        try:
-            input('WARNING: All render progress will be wiped and all datasets will be processed.\n' 
-                  'Press ENTER to continue or CTRL+C to abort\n')
-        except KeyboardInterrupt:
-            logger.info('\nAborted by user')
-            sys.exit(0)
+        if not auto_confirm:
+            try:
+                input('WARNING: All render progress will be wiped and all datasets will be processed.\n' 
+                    'Press ENTER to continue or CTRL+C to abort\n')
+            except KeyboardInterrupt:
+                logger.info('\nAborted by user')
+                sys.exit(0)
         wipe_progress_stacks = list(dataset_configs)
 
     # Wipe progress for the requested datasets
@@ -345,12 +348,18 @@ def render_dataset(
     max_z = max(c['z_offset'] + c['local_z_max'] - c['local_z_min'] for c in dataset_configs.values())
     dest_shape = [int(max_z), *map(int, trsf_attrs['output_shape'])]
 
+    if start_over:
+        logger.info('Stores will be wiped before starting. This may take a few minutes...')
+        mode = 'w'
+    else:
+        mode = 'a'
+
     destination = open_store(
-        destination_path, mode='a', dtype=ts.uint8,
+        destination_path, mode=mode, dtype=ts.uint8,
         shape=dest_shape, chunks=CHUNK_SIZE
     )
     destination_mask = open_store(
-        destination_path + '_mask', mode='a', dtype=ts.bool,
+        destination_path + '_mask', mode=mode, dtype=ts.bool,
         shape=dest_shape, chunks=CHUNK_SIZE
     )
     if save_downsampled > 1:
@@ -358,7 +367,7 @@ def render_dataset(
         ds_output_path = destination_path.rsplit('/', maxsplit=1)[0]
         ds_output_path = os.path.join(ds_output_path, f'{save_downsampled}x_' + project_name)
         ds_destination = open_store(
-            ds_output_path, mode='a', dtype=ts.uint8,
+            ds_output_path, mode=mode, dtype=ts.uint8,
             shape=[dest_shape[0], dest_shape[1] // save_downsampled, dest_shape[2] // save_downsampled], 
             chunks=CHUNK_SIZE
             )
@@ -436,6 +445,11 @@ def add_parser_arguments(parser):
                         nargs='+',
                         default=[],
                         help='Wipe render progress for one or more specific stack(s) before starting')
+    parser.add_argument('-y',
+                        dest='auto_confirm',
+                        action='store_true',
+                        help='Auto confirm that progress should be wiped when --start-over is set.')
+    
     return parser
 
 
@@ -455,5 +469,6 @@ if __name__ == '__main__':
         project_dir=args.project_dir,
         num_workers=args.num_workers,
         start_over=args.start_over,
-        wipe_progress_stacks=args.wipe_progress_stacks
+        wipe_progress_stacks=args.wipe_progress_stacks,
+        auto_confirm=args.auto_confirm
     )
