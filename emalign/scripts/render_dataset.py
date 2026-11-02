@@ -12,13 +12,13 @@ from inspect import signature
 from sofima.warp import ndimage_warp
 from tqdm import tqdm
 
-from emalign.align_dataset_z import load_and_validate_configs
+from emalign.align_z.config import load_and_validate_configs
 from emalign.arrays.warp_tiled import warp_affine_tiled, SHRT_MAX
-from emalign.align_z.transform import to_3x3, shift_matrix 
-from emalign.io.progress import get_mongo_client, get_mongo_db, log_progress, wipe_progress, check_progress 
+from emalign.align_z.transform import get_valid_slices, to_3x3, shift_matrix
+from emalign.io.progress import get_mongo_client, get_mongo_db, log_progress, wipe_progress, check_progress, format_timestamp
 from emalign.io.process.mask import mask_to_bbox
 from emalign.io.store import open_store, get_store_attributes, set_store_attributes, write_data
-from emalign.io.utils import get_dataset_name, get_zarr_root, load_slice
+from emalign.io.utils import get_dataset_name, get_zarr_root, has_valid_transform, load_slice
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,6 @@ def render_slice(
     '''Warp a slice into the flow canvas with M, then apply the inverse map of the mesh.'''
 
     if num_workers > 0:
-        # Set the number of workers used by cv2 to match keypoints
         cv2.setNumThreads(max(1, num_workers - 1))
     
     # Transform image
@@ -133,8 +132,8 @@ def render_stack(
     # Slices without a valid transform are skipped, as in the flow
     raw_trsf_path = os.path.join(zarr_path, 'z_intermediate', 'transform', dataset_name)
     raw_transforms = open_store(raw_trsf_path, mode='r').read().result()
-    valid = ~np.isnan(raw_transforms).any(axis=(1, 2))
-    valid[[z for z in ignore_slices if z < len(valid)]] = False
+    valid = get_valid_slices(raw_transforms, dataset_trsf.read().result(), z_min, z_max,
+                             ignore_slices, dataset_name)
 
     # The mesh exists on the flow canvas (scale 1), which starts at -shift in the output.
     # We render in that canvas and write it at -shift, rounded so the image is exactly placed.
@@ -192,7 +191,7 @@ def render_stack(
         range(first_z, z_max),  
         total=z_max - first_z,
         position=0,
-        desc=f'{dataset_name}: Rendering aligned slices',
+        desc=f'    Rendering aligned slices',
         dynamic_ncols=True,
         leave=True
         ):
@@ -396,7 +395,13 @@ def render_dataset(
             if dataset_name in rendered:
                 continue
 
+            logger.info(dataset_name)
+
             config = dataset_configs[dataset_name].copy()
+            if not has_valid_transform(config):
+                logger.info('    Skipping because no valid transform exists.')
+                continue
+
             dataset_path = os.path.abspath(config['dataset_path'])
             config['dataset'] = open_store(dataset_path, mode='r', dtype=ts.uint8)
             config['dataset_mask'] = open_store(dataset_path + '_mask', mode='r', dtype=ts.bool, allow_missing=True)
