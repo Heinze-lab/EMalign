@@ -9,7 +9,7 @@ import tensorstore as ts
 from tqdm import tqdm
 
 from emalign.arrays.sift import SIFT_SCALES, estimate_transform_sift_fast
-from emalign.io.progress import get_mongo_client, get_mongo_db, log_progress, check_progress
+from emalign.io.progress import get_mongo_client, get_mongo_db, log_progress, check_progress, format_timestamp
 from emalign.io.store import write_ndarray, open_store, get_store_attributes, set_store_attributes
 from emalign.io.utils import load_reference_slice, load_slice
 
@@ -81,6 +81,9 @@ def load_matching_reference(reference, reference_mask, z, scale):
 def _pairwise_transform(ref_img, ref_mask, mov_img, mov_mask, match_scale=1):
     '''Compute pairwise raw homology matrix mapping mov to ref, or None.'''
     for sift_scale in SIFT_SCALES:
+        # For matching to reference, images are downsampled. If SIFT downsampling
+        # was added on top, it may cause large displacement despite good matches.
+        sift_scale = min(1, sift_scale / match_scale) 
         M, _, _, valid, _ = estimate_transform_sift_fast(
             ref_img, mov_img, scale=sift_scale,
             ref_mask=ref_mask, mov_mask=mov_mask,
@@ -100,6 +103,8 @@ def compute_transforms_stack(dataset_path,
                              reference_path=None,
                              reference_offset=0,
                              align_to_reference=False,
+                             max_gap=2,
+                             carry_slice=None,
                              ignore_slices=(),
                              project_name='OV',
                              mongodb_config_filepath=None,
@@ -272,8 +277,8 @@ def compute_transforms_stack(dataset_path,
             break
     else:
         # Everything was processed already
-        logging.info(f'    All transforms were already computed.')
-        return
+        logging.info(f'    All transforms were already computed ({format_timestamp(timestamp)}).')
+        return get_store_attributes(dataset_trsf).get('any_valid', False)
     
     # ---------- First slice to process ----------
     if not resume:
@@ -319,6 +324,7 @@ def compute_transforms_stack(dataset_path,
                 'reference_path': reference_path,
                 'reference_offset': int(reference_offset),
                 'align_to_reference': bool(align_to_reference),
+                'max_gap': int(max_gap),
                 'ref_scale': ref_scale,
                 'match_scale': match_scale,
                 'raw_homography': True,  # Pairwise, not cumulative transforms
@@ -434,24 +440,7 @@ def compute_transforms_stack(dataset_path,
                          {'skipped': True})
             continue
 
-        if align_to_reference:
-            # Matching slice in the reference, in global coordinates
-            ref_slice = load_reference_slice(
-                reference, reference_mask, z + reference_offset, ref_scale * match_scale)
-
-        # Compute SIFT transform
-        res = _pairwise_transform(
-            ref_slice['img'], ref_slice['mask'], 
-            mov_slice['img'], mov_slice['mask']
-            )
-        if res is not None:
-            M, sift_scale = res
-            # Back to target resolution pixels, the linear part is scale invariant
-            M[:, 2] /= match_scale
-
-            # Write to file
-            write_t(z, M)
-            if not align_to_reference:
+        if not align_to_reference:
             if align_slice(ref_slice, mov_slice, None, None):
                 ref_slice = mov_slice   # Reference for next slice
             # else: failed to find transform, so we keep the reference
@@ -498,9 +487,44 @@ def compute_transforms_stack(dataset_path,
     # Mark stack transforms as complete
     attrs = get_store_attributes(dataset_trsf)
     attrs['complete'] = True
+
+    # Mark store as valid if any transform succeeded, this will inform flow steps
+    raw = dataset_trsf[z_min:z_max].read().result()
+    valid = ~np.isnan(raw).any(axis=(1, 2))
+    valid[[z - z_min for z in ignore_slices if z_min <= z < z_max]] = False
+    any_valid = bool(valid.any())
+    attrs['any_valid'] = any_valid
     set_store_attributes(dataset_trsf, attrs)
 
     logging.info(f'    Pairwise transform done. | Ignored slices: {n_ignored}. | Empty slices: {n_gap}. | Failed slices: {n_failed}.')
+    if align_to_reference and (n_chained or n_no_ref):
+        logging.info(f'    Without reference: {n_chained} slices chained to their neighbour. | '
+                     f'{n_no_ref} slices further than {max_gap} slices from the reference, left without transform.')
+    if n_no_ref:
+        logging.warning(f'    {dataset_name}: {n_no_ref} slices were left without transform for lack of reference, '
+                        'increase max_gap to chain them to their neighbours.')
+    # Return True if some of the slices were processed successfully
+    return any_valid
+
+
+def get_valid_slices(raw_transforms, final_transforms, z_min, z_max, ignore_slices=(), dataset_name=''):
+    '''Slices that have a valid transform, as a boolean array over z.
+
+    A slice is valid if its pairwise transform was found. A stack made of a single slice is kept
+    even if it was not: chaining placed it with the transform of the previous stack, and it is
+    rendered there (it gets no flow, see compute_flow_stack). Without a previous stack
+    (align_to_reference), its final transform is NaN too and it stays invalid.
+    '''
+    valid = ~np.isnan(raw_transforms).any(axis=(1, 2))
+    valid[[z for z in ignore_slices if z < len(valid)]] = False
+    # A slice chained to one without transform (align_to_reference) could not be placed
+    valid[:len(final_transforms)] &= ~np.isnan(final_transforms[:len(valid)]).any(axis=(1, 2))
+    if (z_max - z_min == 1 and z_min < len(valid) and not valid[z_min] and z_min not in ignore_slices
+            and not np.isnan(final_transforms[z_min]).any()):
+        logging.info(f'    {dataset_name}: No transform was found for the only slice of this stack, '
+                     'it is placed as the previous stack, without flow.')
+        valid[z_min] = True
+    return valid
 
 
 def chain_transforms_path(
@@ -527,7 +551,8 @@ def chain_transforms_path(
             carry_in,
             bbox,
             anchor_inv,
-            align_to_reference=config.get('align_to_reference', False)
+            align_to_reference=config.get('align_to_reference', False),
+            ignore_slices=config.get('ignore_slices', ())
         )
         chained_paths.append(trsf_chained_path)
     return bbox
@@ -572,6 +597,7 @@ def chain_transforms_stack(
         bbox=None,
         anchor_inv=None,
         align_to_reference=False,
+        ignore_slices=(),
         return_transform=False
     ):
 
@@ -596,16 +622,13 @@ def chain_transforms_stack(
     attrs = get_store_attributes(dataset_trsf)
     if not attrs['complete']:
         raise RuntimeError(f'{dataset_name}: Raw transform computation incomplete')
+    target_scale = attrs['scale']
 
     trsf_chained_path = os.path.join(zarr_path, 'z_intermediate', 'transform_chained', dataset_name)
-    dataset_trsf_chained = open_store(
-        trsf_chained_path, 
-        mode='a', dtype=ts.float32,
-        shape=dataset_trsf.shape, chunks=[1, 2, 3], axis_labels=['z', 'a', 'b'],
-        fill_value=np.nan)
-    
-    attrs = get_store_attributes(dataset_trsf_chained)
+    attrs = get_store_attributes(trsf_chained_path)
     if attrs is not None and not attrs['raw_homography'] and attrs['complete']:
+        dataset_trsf_chained = open_store(trsf_chained_path, mode='r')
+        
         # Chained transform was already performed and written to file, return
         chained_transforms = dataset_trsf_chained.read().result()
         chained_transforms = to_3x3(chained_transforms)
@@ -615,16 +638,27 @@ def chain_transforms_stack(
             return chained_transforms, chained_transforms[-1], merged_bbox
         return trsf_chained_path, chained_transforms[-1], merged_bbox
     
+    dataset_trsf_chained = open_store(
+        trsf_chained_path, 
+        mode='w', dtype=ts.float32,
+        shape=dataset_trsf.shape, chunks=[1, 2, 3], axis_labels=['z', 'a', 'b'],
+        fill_value=np.nan)
+
     # Get everything in memory, should be tiny
     transforms = dataset_trsf.read().result()
 
     # Turn transforms from [z, 2, 3] to [z, 3, 3] so they can be multiplied with each other
     transforms = to_3x3(transforms)
-    
+
+    # Ignored slices may still hold a transform from a run before they were ignored
+    transforms[[z for z in ignore_slices if z < len(transforms)]] = np.nan
+
+    # Slices with a transform of their own: empty, ignored, failed and out of range slices are NaN
+    valid = ~np.isnan(transforms).any(axis=(1, 2))
+
     if not align_to_reference:
         # Chain matrices starting with the first item
         # Ignore NaNs or they will break the chain
-        valid = ~np.isnan(transforms).any(axis=(1, 2))
         chained_transforms = np.empty_like(transforms)
         prev = carry_in if carry_in is not None else np.eye(3)
         for i in range(len(transforms)):
@@ -675,23 +709,37 @@ def chain_transforms_stack(
         logging.info(f'    {dataset_name}: No valid transform, the stack does not contribute to the output bbox.')
 
     # Update the global bbox
-    bbox = update_bbox(bbox, chained_transforms, dataset.shape[1:], anchor_inv)
+    bbox = merge_bbox(bbox, stack_bbox)
 
     # Write to file
     dataset_trsf_chained.write(chained_transforms[:, :2, :].astype(np.float32)).result()
 
-    set_store_attributes(dataset_trsf_chained, 
+    set_store_attributes(dataset_trsf_chained,
                             {
                                 'dataset_path': dataset_path,
                                 'raw_transform_path': trsf_path,
                                 'raw_homography': False,
-                                'bbox': bbox,
+                                'bbox': stack_bbox,  # This stack only, merged into the global bbox when reused
                                 'complete': True
     })
 
     if return_transform:
         return chained_transforms[:, :2, :], chained_transforms[-1], bbox
     return trsf_chained_path, chained_transforms[-1], bbox
+
+
+def _read_chained_transform(zarr_path, dataset_name, z):
+    '''Chained transform of slice z of a stack, before the final shift, as [3, 3].'''
+    trsf_chained_path = os.path.join(zarr_path, 'z_intermediate', 'transform_chained', dataset_name)
+    attrs = get_store_attributes(trsf_chained_path)
+    if not attrs or not attrs.get('complete', False):
+        raise RuntimeError(f'{dataset_name}: Chained transforms are needed by the next stack, '
+                           'but were not computed yet.')
+    M = to_3x3(open_store(trsf_chained_path, mode='r')[z:z + 1].read().result().astype(np.float64))[0]
+    if attrs.get('final', False):
+        # Already shifted into the output frame
+        M = np.linalg.inv(shift_matrix(attrs['shift_x'], attrs['shift_y'])) @ M
+    return M
 
 
 def to_3x3(M):
