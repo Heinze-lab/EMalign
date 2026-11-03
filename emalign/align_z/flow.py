@@ -1,23 +1,24 @@
-from concurrent.futures import ThreadPoolExecutor
-import logging
-import os
-
 import cv2
-from scipy import ndimage
-import numpy as np
-import tensorstore as ts
 import jax.numpy as jnp
-from tqdm import tqdm
+import logging
+import numpy as np
+import os
+import tensorstore as ts
+
+from concurrent.futures import ThreadPoolExecutor
+from connectomics.common import bounding_box
+from scipy import ndimage
 from sofima import flow_field, flow_utils, map_utils
 from sofima.mesh import relax_mesh, IntegrationConfig
-from connectomics.common import bounding_box
+from tqdm import tqdm
 
-from emalign.align_z.transform import (to_3x3, update_bbox,
-                                       compute_global_bbox, shift_matrix)
-from emalign.align_z.warp_hotfix import warp_affine_tiled
+from emalign.align_z.params import CLEAN_DEFAULTS, MESH_DEFAULTS
+from emalign.align_z.transform import (FROM_OTHER_STACK, NO_REF, TO_REFERENCE, chain_depth, get_valid_slices,
+                                       load_matching_reference, read_carried_from, read_transform_refs, to_3x3,
+                                       update_bbox, compute_global_bbox, shift_matrix)
 from emalign.io.utils import load_slice, load_reference_slice, warp_slice
 from emalign.arrays.utils import pad_to_shape
-from emalign.io.progress import get_mongo_client, get_mongo_db, log_progress, check_progress
+from emalign.io.progress import get_mongo_client, get_mongo_db, log_progress, check_progress, format_timestamp
 from emalign.io.store import write_ndarray, open_store, get_store_attributes, set_store_attributes
 
 logger = logging.getLogger(__name__)
@@ -27,23 +28,26 @@ def combine_flow(
         ds_flow,
         stride,
         patch_size,
-        max_magnitude,
-        max_deviation,
         ds_scale,
-        dataset_name
+        min_peak_ratio=CLEAN_DEFAULTS['min_peak_ratio'],
+        min_peak_sharpness=CLEAN_DEFAULTS['min_peak_sharpness'],
+        max_magnitude=CLEAN_DEFAULTS['max_magnitude'],
+        max_deviation=CLEAN_DEFAULTS['max_deviation'],
+        max_gradient=CLEAN_DEFAULTS['max_gradient'],
+        min_patch_size=CLEAN_DEFAULTS['min_patch_size']
         ):
     pad = patch_size // 2 // stride
     flow = np.pad(flow, [[0, 0], [0, 0], [pad, pad], [pad, pad]], constant_values=np.nan)
     ds_flow = np.pad(ds_flow, [[0, 0], [0, 0], [pad, pad], [pad, pad]], constant_values=np.nan)
 
     flow = flow_utils.clean_flow(flow,
-                                 min_peak_ratio=1.6,
-                                 min_peak_sharpness=1.6,
+                                 min_peak_ratio=min_peak_ratio,
+                                 min_peak_sharpness=min_peak_sharpness,
                                  max_magnitude=max_magnitude,
                                  max_deviation=max_deviation)
     ds_flow = flow_utils.clean_flow(ds_flow,
-                                    min_peak_ratio=1.6,
-                                    min_peak_sharpness=1.6,
+                                    min_peak_ratio=min_peak_ratio,
+                                    min_peak_sharpness=min_peak_sharpness,
                                     max_magnitude=max_magnitude,
                                     max_deviation=max_deviation)
     ds_flow_hires = np.zeros_like(flow)
@@ -63,13 +67,15 @@ def combine_flow(
             1 / ds_scale, 1)
         ds_flow_hires[:, z:z + 1, ...] = resampled / ds_scale
 
-    return flow_utils.reconcile_flows((flow, ds_flow_hires), max_gradient=0, max_deviation=max_deviation, min_patch_size=400)
+    return flow_utils.reconcile_flows((flow, ds_flow_hires), max_gradient=max_gradient,
+                                      max_deviation=max_deviation, min_patch_size=min_patch_size)
 
 
 def get_inv_map(flow,
                 stride,
                 mesh_config=None,
                 relax_xy=False,
+                z_refs=None,
                 init_map=None,
                 start=(0., 0.),
                 init_start=(0., 0.)):
@@ -82,22 +88,25 @@ def get_inv_map(flow,
         the reference for the next slice.
       - init_map: [2, 1, y', x'] solved map of the slice the first flow of this stack refers to,
         i.e. the anchor slice of the previous stack in the path. None for the identity (root stack).
+        With relax_xy, solved map of the slice of the previous stack that slices marked
+        FROM_OTHER_STACK were compared to.
       - start, init_start: yx origin of the flow grid and of the init_map grid in the output
         frame, in grid units (-shift / stride), so that stacks with different canvases match.
-      - relax_xy: every slice was compared to a final reference (align_to_reference),
-        no state is carried from slice to slice.
+      - relax_xy: slices were compared to a final reference (align_to_reference), no state
+        is carried from slice to slice, except for slices that had no reference.
+      - z_refs: with relax_xy, what each slice was compared to (see transform.NO_REF): the
+        reference, or another slice of this stack whose state it is relaxed towards (and keeps
+        if it has no flow). None if every slice was compared to the reference.
     Returns the inverse maps, the solved maps and the flow bounding box. The solved maps give
     the state to pass as init_map to the next stack of the path.
     '''
 
     if mesh_config is None:
-        mesh_config = IntegrationConfig(dt=0.001, gamma=0.5, k0=0.01, k=0.1, stride=(stride, stride), num_iters=1000,
-                                            max_iters=100000, stop_v_max=0.005, dt_max=1000, start_cap=0.01,
-                                            final_cap=10, prefer_orig_order=True)
+        mesh_config = IntegrationConfig(stride=(stride, stride), **MESH_DEFAULTS)
 
     start = jnp.asarray(start, dtype=jnp.float32)
     identity = np.zeros_like(flow[:, 0:1, ...])
-    if init_map is None or relax_xy:
+    if init_map is None:
         state = identity
     else:
         # Bring the state of the previous stack onto the grid of this stack, by sampling it at
@@ -110,25 +119,41 @@ def get_inv_map(flow,
                                                   order=1, mode='nearest')
                           for c in range(init_map.shape[0])])[:, None].astype(identity.dtype)
 
-    solved = []
-    for z in tqdm(range(flow.shape[1]),
+    n = flow.shape[1]
+    if relax_xy:
+        if z_refs is None:
+            z_refs = np.full(n, TO_REFERENCE)
+        # Slices chained to a neighbour need its state first: closest to the reference first
+        order = sorted(range(n), key=lambda z: chain_depth(z_refs, z))
+    else:
+        order = range(n)
+
+    solved = [None] * n
+    for z in tqdm(order,
                   desc=f'    Relaxing mesh',
                   dynamic_ncols=True):
         f = flow[:, z:z+1, ...]
+        chained = relax_xy and z_refs[z] >= 0
+        # Compared to the previous stack, whose state is the one brought from init_map
+        from_other = relax_xy and z_refs[z] == FROM_OTHER_STACK
         if np.isnan(f).all():
             # No flow for this slice, it keeps the current state, which stays the reference
-            solved.append(identity if relax_xy else state)
+            if chained:
+                solved[z] = solved[z_refs[z]]
+            else:
+                solved[z] = identity if relax_xy and not from_other else state
             continue
 
-        if relax_xy:
+        if relax_xy and not chained and not from_other:
             # The reference is final, relax towards the flow only
             target = f
         else:
             # Relax towards the state of the slice this flow was computed against
-            target = map_utils.compose_maps_fast(f, start, stride, state, start, stride)
+            ref_state = solved[z_refs[z]] if chained else state
+            target = map_utils.compose_maps_fast(f, start, stride, ref_state, start, stride)
         x, _, _ = relax_mesh(identity, target, mesh_config)
         x = np.array(x)
-        solved.append(x)
+        solved[z] = x
 
         if not relax_xy:
             state = x
@@ -156,16 +181,32 @@ def _read_final_transforms(zarr_path, dataset_name, scale):
     return transforms
 
 
-def _warp_slice(s, M, canvas_shape):
-    '''Warp a loaded slice + mask into the flow canvas.'''
-    if s['empty']:
-        return s
+def _load_reference_crop(reference, reference_mask, z, scale, M, canvas_shape, margin=2):
+    '''Load, resample and warp only the part of a reference slice that lands on the canvas.
 
-    dsize = (int(canvas_shape[1]), int(canvas_shape[0]))
-    warp = warp_affine_tiled if max(*s['img'].shape, *dsize) > SHRT_MAX else cv2.warpAffine
-    img = warp(s['img'], M[:2], dsize)
-    mask = warp(s['mask'].astype(np.uint8), M[:2], dsize).astype(bool)
-    return s | {'img': img, 'mask': mask}
+    M maps the reference, resampled to scale, onto the canvas. The canvas corners are mapped
+    back to native reference pixels so that only that region is read and resampled, instead
+    of the whole slice (a reference upsampled to the target resolution can be huge).
+    '''
+    h, w = canvas_shape
+    corners = np.array([[0, 0, 1], [w, 0, 1], [w, h, 1], [0, h, 1]], dtype=np.float64).T
+    xy = (np.linalg.inv(M) @ corners)[:2] / scale  # Native reference pixels
+
+    # Margin for the interpolation at the edges, then clip to the reference
+    inc_min = np.asarray(reference.domain.inclusive_min[1:])[::-1]  # xy
+    exc_max = np.asarray(reference.domain.exclusive_max[1:])[::-1]
+    x0, y0 = np.maximum(np.floor(xy.min(axis=1)).astype(int) - margin, inc_min)
+    x1, y1 = np.minimum(np.ceil(xy.max(axis=1)).astype(int) + margin, exc_max)
+    if x0 >= x1 or y0 >= y1:
+        raise RuntimeError(f'Canvas does not overlap the reference ({reference.kvstore.path}).')
+
+    # Views keep the domain of the reference, so z indexing is unchanged
+    crop = np.s_[:, int(y0):int(y1), int(x0):int(x1)]
+    mask_view = reference_mask[crop] if reference_mask is not None else None
+    s = load_matching_reference(reference[crop], mask_view, z, scale)
+
+    # The crop starts at (x0, y0) native pixels, i.e. (x0, y0) * scale in the resampled reference
+    return warp_slice(s, M @ shift_matrix(x0 * scale, y0 * scale), canvas_shape)
 
 
 def _homogenise_ref_shape(ref, ref_mask, shape):
@@ -276,12 +317,13 @@ def compute_flow_stack(dataset_path,
                        scale=1,
                        local_z_min=None,
                        local_z_max=None,
-                       reference_dataset=None,
+                       reference_path=None,
                        reference_offset=0,
                        align_to_reference=False,
                        ignore_slices=(),
                        project_name='OV',
                        mongodb_config_filepath=None,
+                       overwrite=False,
                        num_workers=0
                        ):
     '''Compute and store the optical flow for every slice of one stack.
@@ -289,12 +331,14 @@ def compute_flow_stack(dataset_path,
     Slices are warped with the final transforms of compute_transforms_stack, onto
     a canvas covering the stack's footprint in the output frame. Each slice is
     compared to the same anchor it was aligned to for the transforms:
-      - no reference_dataset: the anchor is the first valid slice of this stack,
+      - no reference_path: the anchor is the first valid slice of this stack,
         it gets no flow and every slice follows the previous valid one.
-      - reference_dataset: the anchor is the last non-empty slice of the reference,
+      - reference_path: the anchor is the last non-empty slice of the reference,
         then every slice still follows the previous valid one of this stack.
-      - reference_dataset + align_to_reference: every slice is compared to its
-        matching slice in the reference, found at z + reference_offset.
+      - reference_path + align_to_reference: every slice is compared to its
+        matching slice in the reference, found at z + reference_offset. Slices that had
+        no reference for the transforms are compared to the slice of this stack they were
+        chained to (see compute_transforms_stack), get_inv_map composes their mesh with it.
     Slices without a valid transform (empty, ignored or failed) get no flow.
 
     scale is applied on top of yx_target_resolution, so the flow can also be
@@ -331,17 +375,17 @@ def compute_flow_stack(dataset_path,
     mov_flow_scale = scale * target_scale
 
     # Get reference store, it may have its own resolution
-    if reference_dataset is None:
+    if reference_path is None:
         # Align to self, no reference provided
         if align_to_reference:
-            raise ValueError('align_to_reference requires a reference_dataset.')
+            raise ValueError('align_to_reference requires a reference_path.')
         reference = reference_mask = None
         ref_flow_scale = mov_flow_scale
     else:
         # Align to external reference dataset
-        reference_dataset = os.path.abspath(reference_dataset)
-        reference = open_store(reference_dataset, mode='r', dtype=ts.uint8)
-        reference_mask = open_store(reference_dataset + '_mask', mode='r',
+        reference_path = os.path.abspath(reference_path)
+        reference = open_store(reference_path, mode='r', dtype=ts.uint8)
+        reference_mask = open_store(reference_path + '_mask', mode='r',
                                     dtype=ts.bool, allow_missing=True)
         ref_res = get_store_attributes(reference)['resolution'][-1]
         ref_scale = 1 if yx_target_resolution is None else ref_res / yx_target_resolution
@@ -350,49 +394,82 @@ def compute_flow_stack(dataset_path,
         if not align_to_reference:
             # We only align to the last slice of the reference, as an anchor
             # Transforms are already at target scale so we only need to scale them for the flow
-            ref_transforms = _read_final_transforms(zarr_path, os.path.basename(reference_dataset), scale)
-        else:
-            # We assume that the reference is otherwise final
-            # Transforms are already at target scale so we only need to scale them for the flow
-            ref_transforms = np.eye(3, dtype=np.float32)
-            ref_transforms[:2, 2] *= scale
-            ref_transforms = np.repeat(ref_transforms[None, ...], reference.shape[0], axis=0)
+            ref_transforms = _read_final_transforms(zarr_path, os.path.basename(reference_path), scale)
+        # else: ref_transforms is derived from this stack's transforms, see below
 
     z_min = local_z_min if local_z_min is not None else dataset.domain.inclusive_min[0]
     z_max = local_z_max if local_z_max is not None else dataset.domain.exclusive_max[0]
     ignore_slices = set(ignore_slices)
 
     # Get transforms
-    # First check raw transforms for valid slices (non-Nan)
+    transforms = _read_final_transforms(zarr_path, dataset_name, scale)
+    # Raw transforms tell which slices are valid (non-NaN)
     raw_trsf_path = os.path.join(zarr_path, 'z_intermediate', 'transform', dataset_name)
     raw_transforms = open_store(raw_trsf_path, mode='r', dtype=ts.float32).read().result()
-    valid = ~np.isnan(raw_transforms).any(axis=(1, 2))
-    valid[[z for z in ignore_slices if z < len(valid)]] = False
-    if not valid[z_min:z_max].any():
-        raise RuntimeError(f'{dataset_name}: No valid transform found, run compute_transforms first.')
-    # Then read final transforms
-    transforms = _read_final_transforms(zarr_path, dataset_name, scale)
+    placed = get_valid_slices(raw_transforms, transforms, z_min, z_max, ignore_slices, dataset_name)
+    if not placed[z_min:z_max].any():
+        print(f'No valid transform found ({z_max-z_min} slices), this dataset will be skipped.')
+        return False
+    # A slice placed without a transform of its own (single slice stack) gets no flow, as it may
+    # not match the previous stack. Its mesh keeps the state of the previous stack.
+    valid = placed & ~np.isnan(raw_transforms).any(axis=(1, 2))
+
+    if align_to_reference:
+        # What each slice was compared to for the transforms, the flow follows the same chain
+        z_refs = read_transform_refs(zarr_path, dataset_name, len(raw_transforms))
+        if z_refs is None:
+            z_refs = np.where(valid, TO_REFERENCE, NO_REF)
+
+        # Raw transforms map each slice onto the reference, final ones also place it in the
+        # output frame (shift @ anchor_inv). The reference must get that same placement,
+        # recovered from any slice aligned to the reference, as its raw and chained transforms are equal.
+        # It is identical for every slice, so ref_transforms[0] stands for all of them
+        on_ref = np.flatnonzero(valid & (z_refs == TO_REFERENCE))
+        if len(on_ref):
+            z_valid = on_ref[0]
+            raw = to_3x3(raw_transforms[z_valid][None].astype(np.float64))[0]
+            raw[:2, 2] *= scale
+            ref_transforms = transforms[z_valid] @ np.linalg.inv(raw)
+            ref_transforms = np.repeat(ref_transforms[None, ...], reference.shape[0], axis=0)
+        else:
+            # Every slice is chained to the previous stack, the reference is not used
+            ref_transforms = None
+
+        # Slice of the previous stack the first slices may be chained to
+        carried = read_carried_from(zarr_path, dataset_name)
+        if carried is not None:
+            carried_path = os.path.abspath(carried['dataset_path'])
+            carried_res = get_store_attributes(open_store(carried_path, mode='r'))['resolution'][-1]
+            carried_flow_scale = scale * (1 if yx_target_resolution is None else carried_res / yx_target_resolution)
+            carried_transform = _read_final_transforms(zarr_path, carried['dataset_name'], scale)[carried['z']]
 
     # Flow is computed only within a bbox containing the relevant image
     # Get the bounding box of the warped image from the transform
     img_shape = np.round(np.array(dataset.shape[1:]) * mov_flow_scale)
-    bbox = update_bbox(None, transforms[valid], img_shape, np.eye(3))
+    bbox = update_bbox(None, transforms[placed], img_shape, np.eye(3))
 
     # Shift the transforms so that they place the cropped image in the correct area
     canvas_shape, (shift_y, shift_x) = compute_global_bbox(bbox)
     shift = shift_matrix(shift_x, shift_y)
     transforms = shift @ transforms
-    if reference is not None:
+    if reference is not None and ref_transforms is not None:
         ref_transforms = shift @ ref_transforms
+    if align_to_reference and carried is not None:
+        carried_transform = shift @ carried_transform
 
     # Create flow store at the root, one per scale
     scale_str = str(round(scale, 2)).replace('.', '_')
     flow_path = os.path.join(zarr_path, 'z_intermediate', f'flow{scale_str}x', dataset_name)
     flow_shape = (np.array(canvas_shape) - (patch_size - stride)) // stride  # Same as sofima's flow_field
     
+    if overwrite:
+        mode = 'w'
+    else:
+        mode = 'a'
+
     dataset_flow = open_store(
         flow_path,
-        mode='a', dtype=ts.float32,
+        mode=mode, dtype=ts.float32,
         shape=[z_max, 4, *flow_shape.tolist()], chunks=[1, 4, 128, 128], axis_labels=['z', 'c', 'y', 'x'],
         fill_value=np.nan)
 
@@ -415,15 +492,17 @@ def compute_flow_stack(dataset_path,
 
 
     # ---------- Check progress ----------
-    first_z = None
+    first_z = timestamp = None
     for z in range(z_min, z_max):
-        if not check_progress(db, dataset_name, step_name, z, doc_filter={'scale': scale}):
+        done, timestamp = check_progress(db, dataset_name, step_name, z, doc_filter={'scale': scale},
+                                         return_timestamp=True)
+        if not done:
             first_z = z
             break
     if first_z is None:
         # Everything was processed already
-        logger.info(f'    All flows were already computed (scale={scale}).')
-        return
+        logger.info(f'    All flows were already computed (scale={scale}, {format_timestamp(timestamp)}).')
+        return True
 
     # Resume from the last slice holding a valid transform
     previous = [z for z in range(z_min, first_z) if valid[z]]
@@ -441,21 +520,17 @@ def compute_flow_stack(dataset_path,
             # Load the corresponding slice within this dataset
             ref_slice = warp_slice(load_slice(dataset, dataset_mask, z_ref, mov_flow_scale),
                                     transforms[z_ref], canvas_shape)
-        else:
-            # Load the corresponding slice in the reference dataset
-            ref_slice = load_reference_slice(reference, reference_mask, first_z + reference_offset,
-                                              ref_flow_scale)
-            ref_slice = _warp_slice(ref_slice, ref_transforms[ref_slice['z']], canvas_shape)
+        # else: each slice gets its own ref slice in the loop below
 
     # ---------- First slice to process ----------
     if not resume:
         # Skip until the first valid slice
-        while not valid[first_z]:
+        while first_z < z_max and not valid[first_z]:
             log_progress(db, dataset_name, step_name, first_z + z_offset - z_min, first_z,
                             {'scale': scale, 'skipped': True})
             first_z += 1
 
-        if reference_dataset is None:
+        if reference_path is None:
             # No reference, the first slice is the anchor and gets no flow
             ref_slice = warp_slice(load_slice(dataset, dataset_mask, first_z, mov_flow_scale),
                                     transforms[first_z], canvas_shape)
@@ -466,14 +541,9 @@ def compute_flow_stack(dataset_path,
             # One slice for anchor and that's it
             # Get the last non-empty slice of the reference as anchor, as for the transforms
             ref_slice = load_reference_slice(reference, reference_mask, None,
-                                              ref_flow_scale, reverse=True)
+                                             ref_flow_scale, reverse=True)
             ref_slice = warp_slice(ref_slice, ref_transforms[ref_slice['z']], canvas_shape)
-        else:
-            # The whole dataset will be aligned to the reference
-            # We look for the slice at the right offset
-            ref_slice = load_reference_slice(reference, reference_mask, first_z + reference_offset,
-                                              ref_flow_scale)
-            ref_slice = _warp_slice(ref_slice, ref_transforms[ref_slice['z']], canvas_shape)
+        # else: each slice gets its own ref slice in the loop below
 
         # Set attributes
         attrs = get_store_attributes(dataset_flow)
@@ -490,8 +560,8 @@ def compute_flow_stack(dataset_path,
                     'canvas_shape': list(canvas_shape),
                     'shift_y': shift_y,  # Output frame -> canvas, in flow resolution pixels
                     'shift_x': shift_x,
-                    'external_first_slice': reference_dataset is not None,
-                    'reference_path': reference_dataset,
+                    'external_first_slice': reference_path is not None,
+                    'reference_path': reference_path,
                     'reference_offset': int(reference_offset),
                     'align_to_reference': bool(align_to_reference),
                     'ref_scale': ref_flow_scale,
@@ -518,8 +588,29 @@ def compute_flow_stack(dataset_path,
     # Prefetch the first slice
     prefetch_data(first_z + window)
 
+    def get_ref_slice(z):
+        '''Ref slice of z with align_to_reference: its matching reference slice, or the slice
+        of this stack it was chained to for the transforms.'''
+        if z_refs[z] == TO_REFERENCE:
+            return _load_reference_crop(reference, reference_mask, z + reference_offset,
+                                        ref_flow_scale, ref_transforms[0], canvas_shape)
+        if z_refs[z] == FROM_OTHER_STACK:
+            # Slice of the previous stack, placed on this canvas
+            carried_path = os.path.abspath(carried['dataset_path'])
+            other = open_store(carried_path, mode='r', dtype=ts.uint8)
+            other_mask = open_store(carried_path + '_mask', mode='r', dtype=ts.bool, allow_missing=True)
+            return warp_slice(load_slice(other, other_mask, carried['z'], carried_flow_scale),
+                              carried_transform, canvas_shape)
+        if prev_slice is not None and prev_slice['z'] == z_refs[z]:
+            return prev_slice
+        # Not in memory: chained to a later slice (before the first one reaching the reference), or resuming
+        return warp_slice(load_slice(dataset, dataset_mask, z_refs[z], mov_flow_scale),
+                          transforms[z_refs[z]], canvas_shape)
+
+    prev_slice = None  # Last slice processed, with align_to_reference
     n_gap = 0
     n_ignored = 0
+    n_no_ref = 0
     for z in tqdm(
         range(first_z, z_max), 
         total=z_max - first_z, 
@@ -546,32 +637,39 @@ def compute_flow_stack(dataset_path,
         else:
             # Process the data
             mov_slice = warp_slice(mov_slice, transforms[z], canvas_shape)
+            if align_to_reference:
+                ref_slice = get_ref_slice(z)
+                prev_slice = mov_slice
+
+            if ref_slice['empty']:
+                # Nothing from the reference slice lands on the canvas, the slice keeps its affine
+                n_no_ref += 1
+                log_progress(db, dataset_name, step_name, global_z, z,
+                             {'scale': scale, 'no_reference': True, 'skipped': True})
+                continue
 
             # Compute flow
             flow = _compute_flow_slice_blockwise(
-                ref_slice['img'], ref_slice['mask'], 
+                ref_slice['img'], ref_slice['mask'],
                 mov_slice['img'], mov_slice['mask'],
-                mfc, patch_size, stride, 
+                mfc, patch_size, stride,
                 block_size=8192, batch_size=128, mask_only_for_patch_selection=False)
 
             # Write data
-            write_f(z, flow)            
-            log_progress(db, dataset_name, step_name, global_z, z,
-                     {'scale': scale, 'mov_scale': mov_flow_scale,
-                      'z_ref': int(ref_slice['z']), 'ref_scale': ref_flow_scale,
-                      'skipped': False})
-            
+            write_f(z, flow)
+            metadata = {'scale': scale, 'mov_scale': mov_flow_scale,
+                        'z_ref': int(ref_slice['z']), 'ref_scale': ref_flow_scale,
+                        'skipped': False}
+            if align_to_reference:
+                # z_ref is in the reference or in this stack
+                metadata['aligned_to'] = {TO_REFERENCE: 'reference',
+                                          FROM_OTHER_STACK: 'other_stack'}.get(z_refs[z], 'previous')
+            log_progress(db, dataset_name, step_name, global_z, z, metadata)
+
             if not align_to_reference:
                 # Align to self, only use the mov_slice as ref if it was valid
                 ref_slice = mov_slice
-        
-        if align_to_reference and z + 1 < z_max:
-            # Get ref for the next iteration, regardless of whether this slice was valid
-            # We assume a one-to-one correspondence along Z
-            ref_slice = load_reference_slice(reference, reference_mask, z + reference_offset + 1,
-                                              ref_flow_scale)
-            ref_slice = _warp_slice(ref_slice, ref_transforms[ref_slice['z']], canvas_shape)
-        
+
      # Shutdown the read pool
     read_pool.shutdown()
 
@@ -581,3 +679,6 @@ def compute_flow_stack(dataset_path,
     set_store_attributes(dataset_flow, attrs)
 
     logger.info(f'    Flow computation done (scale={scale}). | Ignored slices: {n_ignored}. | Empty slices: {n_gap}.')
+    if n_no_ref:
+        logger.warning(f'    {dataset_name}: {n_no_ref} slices have no reference on the canvas, they get no flow.')
+    return True
