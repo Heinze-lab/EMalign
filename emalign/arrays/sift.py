@@ -4,7 +4,7 @@ import numpy as np
 from emalign.arrays.utils import resample
 
 
-SIFT_SCALES = (0.1, 0.3, 0.5)  # Internal SIFT downsample scales to try, in order
+SIFT_SCALES = (0.1, 0.3, 0.5, 0.7)  # Internal SIFT downsample scales to try, in order
 
 
 def adjust_matrix_to_shape(mov_img, M):
@@ -443,8 +443,8 @@ def estimate_transform_sift_fast(ref_img,
     ds_mov_mask = resample(mov_mask.astype(np.uint8), scale) if mov_mask is not None else None
 
     # Find keypoints using SIFT
-    kp1, des1 = detect_keypoints_sift(ds_ref_img, mask=ds_ref_mask, root_sift=root_sift)
-    kp2, des2 = detect_keypoints_sift(ds_mov_img, mask=ds_mov_mask, root_sift=root_sift)  
+    kp1, des1 = detect_keypoints_sift(ds_ref_img, mask=ds_ref_mask, root_sift=root_sift, n_features=40000, grid=(16,16))
+    kp2, des2 = detect_keypoints_sift(ds_mov_img, mask=ds_mov_mask, root_sift=root_sift, n_features=40000, grid=(16,16))  
 
     M, inliers, good_matches, src_pts, dst_pts = match_keypoints(kp1, kp2, des1, des2)
                
