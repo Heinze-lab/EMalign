@@ -7,8 +7,10 @@ import sys
 from inspect import signature
 
 from emalign.align_z.config import load_and_validate_configs
-from emalign.align_z.transform import chain_transforms_path, compute_global_bbox, compute_transforms_stack, shift_transforms
+from emalign.align_z.transform import (chain_transforms_path, compute_global_bbox, compute_transforms_stack,
+                                       last_valid_slice, shift_transforms)
 from emalign.io.progress import get_mongo_client, get_mongo_db, wipe_progress
+from emalign.io.store import get_store_attributes, set_store_attributes
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +21,12 @@ def compute_dataset_transforms(
         start_over=False,
         wipe_progress_stacks=None
         ):
+    '''Compute pairwise affine transforms for a dataset. 
+
+    The output creates one transform per slice that corresponds to a slice resampled to target_scale.
+    Transforms are computed pairwise on pre-transformation images and later chained to obtain 
+    final transforms, aligning slices throughout the whole dataset.
+    '''
 
     config_dir = os.path.join(project_dir, 'config/z_config')
     if not os.path.exists(config_dir) or not os.listdir(config_dir):
@@ -54,27 +62,43 @@ def compute_dataset_transforms(
     # Handle start_over
     if start_over:
         try:
-            input('WARNING: All progress will be wiped and all datasets will be processed.\n'
+            input('WARNING: All transform progress will be wiped and all datasets will be processed.\n'
                   'Press ENTER to continue or CTRL+C to abort\n')
         except KeyboardInterrupt:
             logger.info('\nAborted by user')
             sys.exit(0)
 
-        # Wipe progress for all datasets
+        wipe_progress_stacks = list(dataset_configs)
+
+    # Wipe progress for the requested datasets
+    wipe_progress_stacks = [s for s in (wipe_progress_stacks or []) if s]
+    if wipe_progress_stacks:
         first_config = next(iter(dataset_configs.values()))
         mongodb_config_filepath = first_config.get('mongodb_config_filepath')
-    
+
         client = get_mongo_client(mongodb_config_filepath)
         db = get_mongo_db(client, project_name)
-        wipe_progress_stacks = []
-        for dataset_name in dataset_configs:
+        for dataset_name in wipe_progress_stacks:
+            if dataset_name not in dataset_configs:
+                raise RuntimeError(f'No configuration found for dataset: {dataset_name}')
             wipe_progress(db, dataset_name, step_name='transform_z') # database progress
-            wipe_progress_stacks.append(dataset_name)
-            logger.info(f'Wiped progress for {dataset_name}')
+            logger.info(f'Wiped transform progress for {dataset_name}')
+
+        # Chained transforms depend on the transforms of the previous datasets in the path,
+        # and the final shift on the bbox of all datasets, so they are all recomputed
+        zarr_path = os.path.dirname(os.path.abspath(destination_path))
+        for dataset_name in dataset_configs:
+            trsf_chained_path = os.path.join(zarr_path, 'z_intermediate', 'transform_chained', dataset_name)
+            attrs = get_store_attributes(trsf_chained_path)
+            if attrs is not None:
+                attrs |= {'complete': False, 'final': False}
+                set_store_attributes(trsf_chained_path, attrs)
 
     # First pass: compute raw in-stack transforms
     logger.info('Starting transforms computation...')
     logger.info(f'Number of cores used for computing transforms: {num_workers}\n')
+    zarr_path = os.path.dirname(os.path.abspath(destination_path))
+    carry_slices = []  # Last valid slice of each stack, with align_to_reference
     for i, path in enumerate(paths):
         prev_dataset = None
         for dataset_name in path:
@@ -88,7 +112,6 @@ def compute_dataset_transforms(
                     f'First dataset ({dataset_name}) of the path is not the root stack ({root_stack})'
 
             config['num_workers'] = num_workers
-            config['wipe_progress_flag'] = any([dataset_name == s for s in wipe_progress_stacks])
             if not config.get('align_to_reference', False):
                 config['reference_path'] = prev_dataset
             else:
@@ -131,6 +154,9 @@ def compute_dataset_transforms(
         )
 
     # Third pass: compute bbox and shift everything
+    logger.info('Placing all transforms onto the final canvas...')
+    if bbox is None:
+        raise RuntimeError('No stack has a valid transform, nothing can be placed in the output.')
     output_shape, (shift_y, shift_x) = compute_global_bbox(bbox)
 
     destination_path = os.path.abspath(destination_path)
@@ -167,13 +193,13 @@ def add_parser_arguments(parser):
                         dest='start_over',
                         default=False,
                         action='store_true',
-                        help='Wipe all progress and restart')
+                        help='Wipe all transform progress and restart')
     parser.add_argument('--wipe-progress',
                         dest='wipe_progress_stacks',
                         type=str,
                         nargs='+',
-                        default=[''],
-                        help='Wipe progress for one or more specific stack(s) before starting')
+                        default=[],
+                        help='Wipe transform progress for one or more specific stack(s) before starting')
     return parser
 
 
