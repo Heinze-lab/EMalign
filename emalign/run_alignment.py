@@ -1,0 +1,189 @@
+import argparse
+import importlib
+import inspect
+import logging
+import os
+
+from emalign.utils.logging_utils import setup_logging
+
+# Step modules load JAX, so they are only imported once CUDA_VISIBLE_DEVICES is set (see __main__).
+# Steps are given by name and resolved when needed.
+STEP_TO_FUNC = {
+    'xy_prep': None,
+    'z_prep': None,
+    'xy_alignment': 'emalign.align_dataset_xy.align_dataset_xy',
+    'fuse_step': 'emalign.scripts.fuse_stacks_xy.fuse_dataset_xy',
+    'z_transforms': 'emalign.scripts.compute_transforms.compute_dataset_transforms',
+    'z_flow': 'emalign.scripts.compute_flow.compute_dataset_flow',
+    'z_render': 'emalign.scripts.render_dataset.render_dataset'
+}
+
+# Flags passed on to the following steps with --run-to-end. Others (e.g. overwrite, force_overwrite)
+# mean different things depending on the step, so they are not passed on.
+FORWARDED_KWARGS = ('project_dir', 'num_workers', 'start_over', 'wipe_progress_stacks')
+
+
+def get_project_next_step(project_dir):
+    from emalign.scripts.project_status import project_status
+
+    next_step = project_status(project_dir, return_next_step=True)
+    if next_step == 'xy_prep':
+        print('XY configuration not found. ' \
+        'Run the following command for help:\n    run_alignment.py xy prep --help')
+        return None
+    elif next_step == 'z_prep':
+        print('Z configuration not found. ' \
+        'Run the following command for help:\n    run_alignment.py z prep --help')
+        return None
+    elif next_step is None:
+        print('All steps are finished.')
+        return None
+
+    # All steps take the project directory
+    module_name, func_name = STEP_TO_FUNC[next_step].rsplit('.', 1)
+    return getattr(importlib.import_module(module_name), func_name)
+
+
+if __name__ == '__main__':
+
+    # Select the GPU(s) first to set CUDA_VISIBLE_DEVICES before imports
+    gpu_parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    gpu_parser.add_argument('-g', '--gpu', dest='gpu_id', type=str, default=None)
+    gpu_id = gpu_parser.parse_known_args()[0].gpu_id
+    if gpu_id is not None:
+        os.environ['CUDA_VISIBLE_DEVICES'] = gpu_id
+
+    from emalign import prep_config_xy, align_dataset_xy, prep_config_z
+    from emalign.scripts import (
+        fuse_stacks_xy,
+        compute_transforms,
+        compute_flow,
+        render_dataset
+        )
+
+    parser = argparse.ArgumentParser(prog='run_alignment')
+    parser.add_argument('--verbose', action='store_true')  # global flag
+    parser.add_argument('-p', '--project-dir',
+                        metavar='PROJECT_DIR',
+                        dest='auto_project_dir',
+                        default=None,
+                        type=str,
+                        help='Without a step (xy or z): run whatever should run next for this project.')
+    parser.add_argument('-c', '--cores',
+                        metavar='CORES',
+                        dest='auto_num_workers',
+                        type=int,
+                        default=None,
+                        help='Without a step: number of threads for the next step. Default: the step\'s own default')
+    parser.add_argument('-g', '--gpu',
+                        metavar='GPU_ID',
+                        dest='gpu_id',
+                        type=str,
+                        default=None,
+                        help='GPU ID(s) to use, e.g. 0 or 0,1. Default: CUDA_VISIBLE_DEVICES')
+    parser.add_argument('--run-to-end',
+                        dest='run_to_end',
+                        action='store_true',
+                        help='After the step finishes, run the following steps of the pipeline until done. ' \
+                             'Cores, --start-over and --wipe-progress are applied to all of them. ' \
+                             'Must come before the step, e.g. run_alignment --run-to-end z flow -p PROJECT_DIR')
+    steps = parser.add_subparsers(dest='alignment_step', required=False)
+
+    # ---------- XY ----------
+    xy = steps.add_parser('xy', help='Stitch tiles within each slice along the XY axes')
+    xy_steps = xy.add_subparsers(dest='xy_step', required=True)
+
+    # Prep
+    prep_xy = xy_steps.add_parser('prep', help='Generate configuration files for XY alignment')
+    prep_config_xy.add_parser_arguments(prep_xy)
+    prep_xy.set_defaults(func=prep_config_xy.prep_align_stacks)
+
+    # Align
+    align_xy = xy_steps.add_parser('align', help='Align and stitch the XY stacks')
+    align_dataset_xy.add_parser_arguments(align_xy)
+    align_xy.set_defaults(func=align_dataset_xy.align_dataset_xy)
+
+    # Fuse
+    fuse_xy = xy_steps.add_parser('fuse', help='Fuse stitched images overlapping on the same Z slices')
+    fuse_stacks_xy.add_parser_arguments(fuse_xy)
+    fuse_xy.set_defaults(func=fuse_stacks_xy.fuse_dataset_xy)
+
+    # ---------- Z ----------
+    z = steps.add_parser('z', help='Align slices along the Z axis')
+    z_steps = z.add_subparsers(dest='z_step', required=True)
+
+    # Prep
+    prep_z = z_steps.add_parser('prep', help='Generate configuration files for Z alignment')
+    prep_config_z.add_parser_arguments(prep_z)
+    prep_z.set_defaults(func=prep_config_z.prep_config_z)
+
+    # Transforms
+    z_trsf = z_steps.add_parser('transform', help='Compute affine transformations for rough alignment along the Z axis')
+    compute_transforms.add_parser_arguments(z_trsf)
+    z_trsf.set_defaults(func=compute_transforms.compute_dataset_transforms)
+
+    # Flow
+    z_flow = z_steps.add_parser('flow', help='Compute flow and relax the resulting mesh')
+    compute_flow.add_parser_arguments(z_flow)
+    z_flow.set_defaults(func=compute_flow.compute_dataset_flow)
+
+    # Render
+    z_render = z_steps.add_parser('render', help='Render the aligned dataset')
+    render_dataset.add_parser_arguments(z_render)
+    z_render.set_defaults(func=render_dataset.render_dataset)
+
+    # ---------- Run ----------
+    args = vars(parser.parse_args())
+    setup_logging(level=logging.DEBUG if args.pop('verbose') else logging.INFO)
+
+    auto_project_dir = args.pop('auto_project_dir')
+    auto_num_workers = args.pop('auto_num_workers')
+    run_to_end = args.pop('run_to_end')
+    args.pop('gpu_id')  # Already applied before the imports
+
+    if run_to_end:
+        logging.info('The --run-to-end flag was set, so the pipeline will go ' \
+                     'to the next step after the current one ran successfully.')
+        logging.info('Please note that any flag wiping progress will be applied too.\n')
+
+    if args['alignment_step'] is None:
+        # No step given, figure out what comes next
+        if auto_project_dir is None:
+            parser.error('Give a step (xy or z), or a project directory with -p to run the next step.')
+        func = get_project_next_step(auto_project_dir)
+        if func is not None:
+            logging.info(f'Next step: {func.__module__}.{func.__name__}\n')
+            kwargs = {'project_dir': auto_project_dir}
+            if auto_num_workers is not None:
+                kwargs['num_workers'] = auto_num_workers
+            func(**kwargs)
+    else:
+        # Keep only the arguments of the step itself
+        func = args.pop('func')
+        for key in ('alignment_step', 'xy_step', 'z_step'):
+            args.pop(key, None)
+        kwargs = args
+        func(**kwargs)
+
+    if run_to_end and func is not None:
+        # Continue onto the next step after the current one is done
+        # Only flags that mean the same thing for every step are passed on, so if --start-over or
+        # --wipe-progress was set, it will apply to everything
+        forwarded = {k: kwargs[k] for k in FORWARDED_KWARGS if kwargs.get(k) is not None}
+
+        last_step = func.__module__
+        while True:
+            func = get_project_next_step(forwarded['project_dir'])
+            if func is None:
+                # No valid next step. get_project_next_step already prints what to do so we move on
+                break
+            if func.__module__ == last_step:
+                logging.info(f'The next step would be repeat of last step ({func.__module__})')
+                logging.info('This may happen if something went unfinished.')
+                break
+
+            print('\n\n\n')
+            last_step = func.__module__
+            logging.info(f'Next step: {func.__module__}.{func.__name__}\n')
+            params = inspect.signature(func).parameters
+            func(**{k: v for k, v in forwarded.items() if k in params})

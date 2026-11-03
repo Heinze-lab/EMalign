@@ -1,0 +1,5 @@
+sphinx>=8
+pydata-sphinx-theme
+myst-nb
+sphinx-copybutton
+sphinx-autoapi

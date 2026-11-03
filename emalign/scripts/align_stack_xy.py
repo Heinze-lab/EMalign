@@ -1,11 +1,4 @@
 import os
-
-# To prevent running out of memory because of preallocation
-os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
-
-os.environ['OMP_NUM_THREADS'] = '4'
-os.environ['MKL_NUM_THREADS'] = '4'
-
 import warnings
 # Prevent printing the following warning, which does not seem to be an issue for the code to run properly:
 #     /home/autoseg/anaconda3/envs/alignment/lib/python3.12/multiprocessing/popen_fork.py:66: RuntimeWarning: os.fork() was called. 
@@ -224,7 +217,8 @@ def align_stack_xy(output_path,
                                             k0=k0,
                                             k=k,
                                             gamma=gamma,
-                                            batch_size=256
+                                            stop_v_max=0.01,
+                                            batch_size=512
                                                 )
                 # Determine the render order once (on the first processed slice) and reuse it
                 # for every subsequent slice. Tiles rendered last end up on top: by default the

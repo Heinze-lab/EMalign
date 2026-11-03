@@ -52,7 +52,10 @@ def get_elastic_mesh(tile_map,
                      k=0.1,
                      gamma=0,
                      prev_x=None,
-                     batch_size=512):
+                     batch_size=512,
+                     max_iters=20000,
+                     stop_v_max=0.001,
+                     return_residual=False):
     
     ''' 
     Compute elastic mesh for XY alignment.
@@ -113,12 +116,19 @@ def get_elastic_mesh(tile_map,
     # gamma: dampening factor
 
     config = mesh.IntegrationConfig(dt=0.001, gamma=gamma, k0=k0, k=k, stride=(stride, stride),
-                                    num_iters=1000, max_iters=20000, stop_v_max=0.001,
+                                    num_iters=1000, max_iters=max_iters, stop_v_max=stop_v_max,
                                     dt_max=100, prefer_orig_order=True,
                                     start_cap=0.1, final_cap=10., remove_drift=True)
     
     x, _, _ = mesh.relax_mesh(x, None, config, prev_fn=prev_fn)
     idx_to_key = {v: k for k, v in key_to_idx.items()}
     meshes = {idx_to_key[i]: np.array(x[:, i:i+1 :, :]) for i in range(x.shape[1])}
+
+    if return_residual:
+        # Distance between each node in an overlap and where the neighbouring tile and the flow
+        # want it to be, in pixels: the misalignment left at the seams. NaN outside the overlaps.
+        residual = np.hypot(*np.array(prev_fn(x) - x)[:2])
+        residuals = {idx_to_key[i]: residual[i] for i in range(residual.shape[0])}
+        return meshes, x, residuals
     
     return meshes, x

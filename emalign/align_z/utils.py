@@ -1,8 +1,6 @@
 ''' Utilities for alignment of stacks along Z axis.'''
 
 import json
-from emalign.arrays.utils import resample
-from emalign.io.store import find_ref_slice, open_store
 import logging
 import networkx as nx
 import numpy as np
@@ -14,12 +12,12 @@ from cv2 import warpAffine
 from glob import glob
 from tqdm import tqdm
 
-from ..io.store import get_store_attributes
+from ..io.store import get_store_attributes, find_ref_slice, open_store
 from ..io.process.mask import compute_greyscale_mask
-from ..arrays.sift import estimate_transform_sift
+from ..arrays.sift import estimate_transform_sift, SIFT_SCALES
+from ..arrays.warp_tiled import SHRT_MAX, warp_affine_tiled
+from ..arrays.utils import resample
 
-
-from ..arrays.sift import SIFT_SCALES
 N_CANDIDATE_SLICES = 3    # Number of slice pairs to try per transition before rejecting it
 
 
@@ -66,7 +64,12 @@ def get_ordered_datasets(config_paths, exclude=[]):
                 dataset = open_store(ds, mode='r')
                 z_shapes.append(dataset.shape[0])
 
-                offset = get_store_attributes(dataset)['voxel_offset']
+                
+                attrs = get_store_attributes(dataset)
+                if attrs is None:
+                    raise FileNotFoundError(f'Attributes do not exist for dataset: {ds}')
+
+                offset = attrs['voxel_offset']
                 offset[0] += previous_offset # Shift this dataset by the previous dataset's offset
                 group_offsets.append(offset)
                 offsets.append(offset)
@@ -468,6 +471,11 @@ def compute_alignment_path(datasets,
     return root_node, paths, reverse_z, ds_bounds
 
 
+def _warp_slice(s, M, canvas_shape):
+    dsize = (int(canvas_shape[1]), int(canvas_shape[0]))
+    warp = warp_affine_tiled if max(*s.shape, *dsize) > SHRT_MAX else warpAffine
+    return warp(s, M[:2], dsize)
+
 def determine_initial_offset(datasets, paths):
     '''Estimate cumulative XY offset needed to accommodate drift across alignment paths.
 
@@ -533,7 +541,7 @@ def determine_initial_offset(datasets, paths):
                                 f'the canvas padding.')
                 prev, prev_mask = _masked_slice(ds_curr, reverse=True)
             else:
-                prev = warpAffine(_masked_slice(ds_curr, reverse=True)[0], M, output_shape[::-1])
+                prev = _warp_slice(_masked_slice(ds_curr, reverse=True)[0], M, output_shape[::-1])
                 prev_mask = None  # The mask no longer matches the warped image
                 path_offset += prev_offset
             pbar.update(1)
