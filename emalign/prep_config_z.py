@@ -7,6 +7,7 @@ import sys
 from glob import glob
 from typing import List, Optional
 
+from emalign.align_z.params import CLEAN_DEFAULTS, MESH_DEFAULTS, check_step_config
 from emalign.align_z.config import add_config_metadata, get_fuse_config_dir, load_fuse_plan, validate_config_directory, CONFIG_VERSION
 from emalign.align_z.utils import compute_alignment_path, compute_dataset_bounds, get_ordered_datasets
 from emalign.io.store import get_store_attributes
@@ -154,6 +155,12 @@ def create_alignment_configs(datasets, z_offsets, output_configs_dir, config_z, 
     Returns:
         tuple: (root_stack, paths, reverse_order)
     '''
+    # Clean-up parameters may still be given in the flow section (older Z configs)
+    flow_config = {k: v for k, v in config_z['flow'].items() if k not in CLEAN_DEFAULTS}
+    clean_config = {k: v for k, v in config_z['flow'].items() if k in CLEAN_DEFAULTS}
+    clean_config = CLEAN_DEFAULTS | check_step_config('clean', clean_config | config_z.get('clean', {}))
+    mesh_config = MESH_DEFAULTS | check_step_config('mesh', config_z['mesh'])
+
     logger.info('Creating Z align configuration files...')
     logger.info(f'Configuration files will be stored at: \n    {output_configs_dir}\n')
 
@@ -210,6 +217,7 @@ def create_alignment_configs(datasets, z_offsets, output_configs_dir, config_z, 
                 'reference_path': reference_path,
                 'align_to_reference': reference_path is not None,  # Every slice aligns to its match in the reference
                 'reference_offset': reference_offset + z_offset - ds_bounds[dataset_name][0],
+                'max_gap': config_z.get('max_gap', 2),  # Slices chained to a neighbour when the reference is missing
                 'alignment_path': path,
                 'reverse_order': order,
                 'project_name': project_name,
@@ -218,12 +226,12 @@ def create_alignment_configs(datasets, z_offsets, output_configs_dir, config_z, 
                 'local_z_min': ds_bounds[dataset_name][0],
                 'local_z_max': ds_bounds[dataset_name][1],
                 'scale': config_z['scale_flow'],
-                'flow_config': config_z['flow'],
-                'mesh_config': config_z['mesh'],
+                'flow_config': flow_config,
+                'clean_config': clean_config,
+                'mesh_config': mesh_config,
                 'warp_config': config_z['warp'],
                 'yx_target_resolution': yx_target_resolution,
-                'save_downsampled': save_downsampled,
-                'overwrite': False
+                'save_downsampled': save_downsampled
             }
             config = add_config_metadata(config)
 
