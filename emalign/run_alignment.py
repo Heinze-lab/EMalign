@@ -1,5 +1,6 @@
 import argparse
 import importlib
+import inspect
 import logging
 import os
 
@@ -16,6 +17,10 @@ STEP_TO_FUNC = {
     'z_flow': 'emalign.scripts.compute_flow.compute_dataset_flow',
     'z_render': 'emalign.scripts.render_dataset.render_dataset'
 }
+
+# Flags passed on to the following steps with --run-to-end. Others (e.g. overwrite, force_overwrite)
+# mean different things depending on the step, so they are not passed on.
+FORWARDED_KWARGS = ('project_dir', 'num_workers', 'start_over', 'wipe_progress_stacks')
 
 
 def get_project_next_step(project_dir):
@@ -76,6 +81,12 @@ if __name__ == '__main__':
                         type=str,
                         default=None,
                         help='GPU ID(s) to use, e.g. 0 or 0,1. Default: CUDA_VISIBLE_DEVICES')
+    parser.add_argument('--run-to-end',
+                        dest='run_to_end',
+                        action='store_true',
+                        help='After the step finishes, run the following steps of the pipeline until done. ' \
+                             'Cores, --start-over and --wipe-progress are applied to all of them. ' \
+                             'Must come before the step, e.g. run_alignment --run-to-end z flow -p PROJECT_DIR')
     steps = parser.add_subparsers(dest='alignment_step', required=False)
 
     # ---------- XY ----------
@@ -127,7 +138,13 @@ if __name__ == '__main__':
 
     auto_project_dir = args.pop('auto_project_dir')
     auto_num_workers = args.pop('auto_num_workers')
+    run_to_end = args.pop('run_to_end')
     args.pop('gpu_id')  # Already applied before the imports
+
+    if run_to_end:
+        logging.info('The --run-to-end flag was set, so the pipeline will go ' \
+                     'to the next step after the current one ran successfully.')
+        logging.info('Please note that any flag wiping progress will be applied too.\n')
 
     if args['alignment_step'] is None:
         # No step given, figure out what comes next
@@ -145,4 +162,28 @@ if __name__ == '__main__':
         func = args.pop('func')
         for key in ('alignment_step', 'xy_step', 'z_step'):
             args.pop(key, None)
-        func(**args)
+        kwargs = args
+        func(**kwargs)
+
+    if run_to_end and func is not None:
+        # Continue onto the next step after the current one is done
+        # Only flags that mean the same thing for every step are passed on, so if --start-over or
+        # --wipe-progress was set, it will apply to everything
+        forwarded = {k: kwargs[k] for k in FORWARDED_KWARGS if kwargs.get(k) is not None}
+
+        last_step = func.__module__
+        while True:
+            func = get_project_next_step(forwarded['project_dir'])
+            if func is None:
+                # No valid next step. get_project_next_step already prints what to do so we move on
+                break
+            if func.__module__ == last_step:
+                logging.info(f'The next step would be repeat of last step ({func.__module__})')
+                logging.info('This may happen if something went unfinished.')
+                break
+
+            print('\n\n\n')
+            last_step = func.__module__
+            logging.info(f'Next step: {func.__module__}.{func.__name__}\n')
+            params = inspect.signature(func).parameters
+            func(**{k: v for k, v in forwarded.items() if k in params})
