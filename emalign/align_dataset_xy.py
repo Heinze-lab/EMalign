@@ -19,6 +19,7 @@ import logging
 import sys
 from tqdm import tqdm
 
+from emalign.align_xy.params import parse_mesh_parameters
 from emalign.arrays.stacks import parse_stack_info
 from emalign.align_xy.render import resolve_img_q_fun
 from emalign.scripts.align_stack_xy import align_stack_xy
@@ -111,7 +112,11 @@ def align_dataset_xy(project_dir,
                                                 position=1, 
                                                 desc='Processing stacks', 
                                                 leave=True):
+        if stack_config_path is None and stack_name.endswith('fused'):
+            # This is a fused stack created at a later step, we're probably re-running some xy stack
+            continue
         tile_maps_paths, tile_maps_invert, ignore_slices = parse_stack_info(stack_config_path)
+        mesh_parameters = parse_mesh_parameters(stack_config_path, stride)
         wipe_this_stack = (stack_name in wipe_progress_stacks)
         align_stack_xy(output_path=output_path,
                        stack_name=stack_name,
@@ -130,7 +135,8 @@ def align_dataset_xy(project_dir,
                        overwrite=overwrite,
                        wipe_progress_flag=wipe_this_stack,
                        img_q_fun=img_q_fun,
-                       min_stitch_score=min_stitch_score)
+                       min_stitch_score=min_stitch_score,
+                       mesh_parameters=mesh_parameters)
     logging.info(f'Done! Output can be found at: {output_path}')
     
 

@@ -10,6 +10,7 @@ import json
 import logging
 import sys
 
+from emalign.align_xy.params import default_mesh_parameters
 from emalign.align_xy.prep import get_stacks, check_stacks_to_invert
 from emalign.arrays.stacks import Stack
 from emalign.io.backend import get_io_backend
@@ -147,7 +148,9 @@ def prep_align_stacks(input_dirs,
                         'tile_maps_invert': {str(k):v for k,v in stack.tile_maps_invert.items()},
                         # placeholders for users to add slices that they want ignored
                         'ignore_slices_local': [], # local indices (starting at 0)
-                        'ignore_slices_global': [] # global indices (starting at z_start for that dataset)
+                        'ignore_slices_global': [], # global indices (starting at z_start for that dataset)
+                        # elastic mesh parameters for stitching, see align_xy/params.py
+                        'mesh_parameters': default_mesh_parameters(stride)
                         }
         config_path = os.path.join(config_dir, 'xy_' + stack.stack_name + '.json')
         config_paths.update({stack.stack_name: os.path.abspath(config_path)})      
@@ -167,7 +170,9 @@ def prep_align_stacks(input_dirs,
                         'tile_maps_invert': {str(k):v for k,v in stack.tile_maps_invert.items()},
                         # placeholders for users to add slices that they want ignored
                         'ignore_slices_local': [], # local indices (starting at 0)
-                        'ignore_slices_global': [] # global indices (starting at z_start for that dataset)
+                        'ignore_slices_global': [], # global indices (starting at z_start for that dataset)
+                        # elastic mesh parameters for stitching, see align_xy/params.py
+                        'mesh_parameters': default_mesh_parameters(stride)
                         }
         config_path = os.path.join(config_dir, 'xy_' + stack.stack_name + '.json')
         config_paths.update({stack.stack_name: os.path.abspath(config_path)})
