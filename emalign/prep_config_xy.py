@@ -1,7 +1,4 @@
 import os
-# To prevent running out of memory because of preallocation
-os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
-
 import warnings
 # Prevent printing the following warning, which does not seem to be an issue for the code to run properly:
 #     /home/autoseg/anaconda3/envs/alignment/lib/python3.12/multiprocessing/popen_fork.py:66: RuntimeWarning: os.fork() was called. 
@@ -13,6 +10,7 @@ import json
 import logging
 import sys
 
+from emalign.align_xy.params import default_mesh_parameters
 from emalign.align_xy.prep import get_stacks, check_stacks_to_invert
 from emalign.arrays.stacks import Stack
 from emalign.io.backend import get_io_backend
@@ -150,7 +148,9 @@ def prep_align_stacks(input_dirs,
                         'tile_maps_invert': {str(k):v for k,v in stack.tile_maps_invert.items()},
                         # placeholders for users to add slices that they want ignored
                         'ignore_slices_local': [], # local indices (starting at 0)
-                        'ignore_slices_global': [] # global indices (starting at z_start for that dataset)
+                        'ignore_slices_global': [], # global indices (starting at z_start for that dataset)
+                        # elastic mesh parameters for stitching, see align_xy/params.py
+                        'mesh_parameters': default_mesh_parameters(stride)
                         }
         config_path = os.path.join(config_dir, 'xy_' + stack.stack_name + '.json')
         config_paths.update({stack.stack_name: os.path.abspath(config_path)})      
@@ -170,7 +170,9 @@ def prep_align_stacks(input_dirs,
                         'tile_maps_invert': {str(k):v for k,v in stack.tile_maps_invert.items()},
                         # placeholders for users to add slices that they want ignored
                         'ignore_slices_local': [], # local indices (starting at 0)
-                        'ignore_slices_global': [] # global indices (starting at z_start for that dataset)
+                        'ignore_slices_global': [], # global indices (starting at z_start for that dataset)
+                        # elastic mesh parameters for stitching, see align_xy/params.py
+                        'mesh_parameters': default_mesh_parameters(stride)
                         }
         config_path = os.path.join(config_dir, 'xy_' + stack.stack_name + '.json')
         config_paths.update({stack.stack_name: os.path.abspath(config_path)})
@@ -200,10 +202,7 @@ def prep_align_stacks(input_dirs,
             json.dump(main_config, f, indent='')
 
 
-if __name__ == '__main__':
-
-    parser=argparse.ArgumentParser('Script aligning tiles in XY based on SOFIMA (Scalable Optical Flow-based Image Montaging and Alignment). \n\
-                                    This script was written to match the file structure produced by the ThermoFisher MAPs software.')
+def add_parser_arguments(parser):
     
     # Required arguments
     parser.add_argument('-p', '--project-dir',
@@ -305,7 +304,15 @@ if __name__ == '__main__':
                         default='volumescope',
                         type=str,
                         help='Valid mode for the IO backend, defining how to parse info from file names (see emalign.io.backend for valid modes).')
+    return parser
 
-    args=parser.parse_args()
+
+if __name__ == '__main__':
+
+    parser=argparse.ArgumentParser('Script aligning tiles in XY based on SOFIMA (Scalable Optical Flow-based Image Montaging and Alignment). \n\
+                                    This script was written to match the file structure produced by the ThermoFisher MAPs software.')
+
+
+    args = add_parser_arguments(parser).parse_args()
 
     prep_align_stacks(**vars(args)) 

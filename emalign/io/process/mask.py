@@ -41,7 +41,7 @@ def compute_greyscale_mask(data, background_value=0, downsample_factor=10):
     mask_small = ndimage.binary_closing(mask_small, structure=struct_elem)
 
     # Upsample back — nearest-neighbour preserves hard edges cleanly
-    return resample(mask_small, downsample_factor)
+    return resample(mask_small, shape=data.shape)
 
 def mask_to_bbox(mask):
     y = np.any(mask, axis=1)

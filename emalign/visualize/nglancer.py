@@ -89,6 +89,7 @@ def add_layers(arrays,
                voxel_offsets=[],
                voxel_sizes=[],
                vtypes=[],
+               shaders=[],
                visible=True,
                transpose=True,
                viewer_layout='xy',
@@ -118,6 +119,8 @@ def add_layers(arrays,
         voxel_sizes = [[1,1,1]]*len(arrays)
     if not vtypes:
         vtypes = [None]*len(arrays)
+    if not shaders:
+        shaders = [None]*len(arrays)
 
     layers = {}
     for i, arr in enumerate(arrays):
@@ -158,4 +161,7 @@ def add_layers(arrays,
         for name, layer in layers.items():
             s.layers.append(name=name, layer=layer)
             s.layers[name].visible = visible
+            if shaders[i] is not None:
+                s.layers[name].shader = shaders[i]
+
         s.layout=viewer_layout

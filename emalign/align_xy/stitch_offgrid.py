@@ -8,7 +8,7 @@ import numpy as np
 import jax.numpy as jnp
 
 from connectomics.common import bounding_box
-from sofima import flow_field, flow_utils, mesh
+from sofima import flow_field, flow_utils, map_utils, mesh
 from sofima.warp import ndimage_warp
 
 from emalign.io.process.mask import compute_greyscale_mask, mask_to_bbox
@@ -50,7 +50,14 @@ def get_elastic_mesh(pre,
                                             max_iters=100000, stop_v_max=0.005, dt_max=1000, start_cap=0.01,
                                             final_cap=10, prefer_orig_order=False)
     x, _, _ = mesh.relax_mesh(jnp.array(x), -flow, mesh_config)
-    return np.array(x)[:,0,...]
+
+    # Fill missing nodes and extend the mesh over the whole image: ndimage_warp samples pixel (0, 0)
+    # for pixels beyond the last node, and drops pixels next to missing nodes
+    x = map_utils.fill_missing(np.array(x), extrapolate=True)
+    n_nodes = -(-np.array(pre.shape) // stride) + 1
+    pad_y, pad_x = np.maximum(n_nodes - x.shape[-2:], 0)
+    x = np.pad(x, [[0, 0], [0, 0], [0, pad_y], [0, pad_x]], mode='edge')
+    return x[:,0,...]
 
 
 def render_fused_slice(pre, 

@@ -1,34 +1,20 @@
-'''Prepare configuration files for Z alignment.
-
-Usage:
-    python -m emalign.prep_config_z \\
-        -p /path/to/project_dir \\
-        -cfg-z /path/to/z_config.json \\
-        -c 4 \\
-        --force-overwrite
-'''
-
 import argparse
 import json
 import logging
-import numpy as np
 import os
 import sys
 
 from glob import glob
 from typing import List, Optional
 
+from emalign.align_z.params import CLEAN_DEFAULTS, MESH_DEFAULTS, check_step_config
 from emalign.align_z.config import add_config_metadata, get_fuse_config_dir, load_fuse_plan, validate_config_directory, CONFIG_VERSION
-from emalign.align_z.utils import compute_alignment_path, compute_dataset_bounds, determine_initial_offset, determine_initial_offset_ref, get_ordered_datasets
+from emalign.align_z.utils import compute_alignment_path, compute_dataset_bounds, get_ordered_datasets
 from emalign.io.store import get_store_attributes
 
-logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 logging.getLogger('absl').setLevel(logging.WARNING)
 logging.getLogger('jax._src.xla_bridge').setLevel(logging.WARNING)
-
-# Constants
-PAD_OFFSET = np.array([1000, 1000])  # Offset to add to origin for drift correction
-
 
 def load_configs_from_files(config_paths, exclude):
     '''Load configuration from XY main config files.
@@ -119,25 +105,25 @@ def check_fuse_step(config_paths, datasets):
         plan, group_configs = load_fuse_plan(project_dir)
 
         if plan is None:
-            logging.info(f'No fusing step was prepared for {project_dir}')
+            logger.info(f'No fusing step was prepared for {project_dir}')
             continue
 
         if plan.get('_config_version') != CONFIG_VERSION:
-            logging.warning(f'Fuse config files were generated with another version '
+            logger.warning(f'Fuse config files were generated with another version '
                             f'({plan.get("_config_version")} instead of {CONFIG_VERSION})')
 
         if not group_configs:
-            logging.info(f'No stacks were found to overlap in {project_dir}')
+            logger.info(f'No stacks were found to overlap in {project_dir}')
             continue
 
-        logging.info(f'Fused stacks ({get_fuse_config_dir(project_dir)}):')
+        logger.info(f'Fused stacks ({get_fuse_config_dir(project_dir)}):')
         for config in group_configs:
             destination_name = config['destination_name']
             sources = ' + '.join(config['fused_from'])
-            logging.info(f'    z {config["zmin"]}-{config["zmax"]}: {sources} -> {destination_name}')
+            logger.info(f'    z {config["zmin"]}-{config["zmax"]}: {sources} -> {destination_name}')
             if destination_name not in dataset_names:
                 missing.setdefault(project_dir, []).append(destination_name)
-    logging.info('')
+    logger.info('')
 
     if missing:
         message = ['Stacks overlapping on the same Z slices must be fused before Z alignment.',
@@ -158,6 +144,8 @@ def create_alignment_configs(datasets, z_offsets, output_configs_dir, config_z, 
         z_offsets: Array of z offsets for each dataset
         output_configs_dir: Directory to store config files
         config_z: Z alignment configuration dictionary
+        reference_path: Path to a reference zarr every dataset aligns to, or None
+        reference_offset: Z offset between each dataset and its reference slice
         destination_path: Path to output zarr
         project_name: Name of the project
         mongodb_config_filepath: Path to MongoDB config
@@ -165,75 +153,45 @@ def create_alignment_configs(datasets, z_offsets, output_configs_dir, config_z, 
         save_downsampled: Downsampling factor
 
     Returns:
-        tuple: (root_stack, paths, reverse_order, root_offset)
+        tuple: (root_stack, paths, reverse_order)
     '''
-    logging.info('Creating Z align configuration files...')
-    logging.info(f'Configuration files will be stored at: \n    {output_configs_dir}\n')
+    # Clean-up parameters may still be given in the flow section (older Z configs)
+    flow_config = {k: v for k, v in config_z['flow'].items() if k not in CLEAN_DEFAULTS}
+    clean_config = {k: v for k, v in config_z['flow'].items() if k in CLEAN_DEFAULTS}
+    clean_config = CLEAN_DEFAULTS | check_step_config('clean', clean_config | config_z.get('clean', {}))
+    mesh_config = MESH_DEFAULTS | check_step_config('mesh', config_z['mesh'])
+
+    logger.info('Creating Z align configuration files...')
+    logger.info(f'Configuration files will be stored at: \n    {output_configs_dir}\n')
 
     if reference_path is None:
         # There is no reference dataset, compute the paths between datasets. 
         # Some stacks may be disconnected in some parts of the dataset
-        logging.info('Computing alignment path...')
+        logger.info('Computing alignment path...')
         root_stack, paths, reverse_order, ds_bounds = compute_alignment_path(
             datasets, z_offsets, target_resolution=yx_target_resolution)
-        
-        # Determine where to start to ensure that everything fits within the canvas
-        logging.info('Computing padding...')
-        root_offset = determine_initial_offset(datasets, paths)
-        pad_offset = PAD_OFFSET.copy()  # pad offsets to correct for any drift
-        root_offset += pad_offset
-        ref_bboxes = None
     else:
         # Each dataset aligns to the reference independently, matched by Z index, so no
         # dataset is ever aligned to another one. Testing the transitions between datasets
         # would only verify a relationship the alignment never uses, so only the Z bounds
         # are computed, to avoid rendering a fused dataset and its sub-datasets twice.
-        logging.info('Computing dataset bounds...')
+        logger.info('Computing dataset bounds...')
         dataset_names, ds_bounds = compute_dataset_bounds(datasets, z_offsets)
         root_stack = dataset_names[0]
         paths = [dataset_names]  # Iteration order only, this is not an alignment chain
         reverse_order = [False]
 
-        # There is a reference dataset so we need to figure out the global offset relative to it
-        # Keep only the datasets that have been fused and ignore their sources
-        logging.info('Computing padding...')
-        keep_indices = [i for i, d in enumerate(datasets) if os.path.basename(os.path.abspath(d.kvstore.path)) in dataset_names]
-        datasets = [datasets[i] for i in keep_indices]
-        z_offsets = z_offsets[keep_indices]
-        root_offset, ref_bboxes = determine_initial_offset_ref(
-            datasets, 
-            z_offsets, 
-            reference_path, 
-            reference_offset, 
-            yx_target_resolution
-            )
-        # root_offset is the (y, x) canvas origin; PAD_OFFSET is added as safety margin.
-        pad_offset = PAD_OFFSET.copy()
-        root_offset += pad_offset
-
-    if ref_bboxes is not None:
-        # Largest bounding box for reference data
-        ref_global_bbox = [np.min(ref_bboxes, axis=0)[0], np.max(ref_bboxes, axis=0)[1], # y1, y2
-                           np.min(ref_bboxes, axis=0)[2], np.max(ref_bboxes, axis=0)[3]] # x1, x2
-        ref_global_bbox = list(map(int, ref_global_bbox))
-        ref_global_bbox_start = np.array([ref_global_bbox[2], ref_global_bbox[0]]) # xy
-    else:
-        ref_global_bbox = None
-
     # Write alignment plan
     align_plan = {
         'root_stack': root_stack,
+        'destination_path': destination_path,
+        'reference_path': reference_path,
+        'align_to_reference': reference_path is not None,
         'paths': paths,
         'reverse_order': reverse_order,
-        'root_offset': root_offset.tolist(),
-        'pad_offset': pad_offset.tolist(),
         'yx_target_resolution': yx_target_resolution,
-        'dataset_local_bounds': ds_bounds,
-        'reference_path': reference_path,
-        'reference_offset': reference_offset,
-        'ref_global_bbox': ref_global_bbox,
-        'destination_path': destination_path,
-        'project_name': project_name
+        'project_name': project_name,
+        'save_downsampled': save_downsampled
     }
     align_plan = add_config_metadata(align_plan)
 
@@ -243,7 +201,7 @@ def create_alignment_configs(datasets, z_offsets, output_configs_dir, config_z, 
 
     # Write configs for each dataset
     done = []
-    for i, (path, order) in enumerate(zip(paths, reverse_order)):
+    for path, order in zip(paths, reverse_order):
         for dataset_name in path:
             if dataset_name in done:
                 continue
@@ -252,53 +210,28 @@ def create_alignment_configs(datasets, z_offsets, output_configs_dir, config_z, 
             z_offset = int(z_offsets[idx, 0]) + ds_bounds[dataset_name][0]
             config_path = os.path.join(output_configs_dir, f'z_{dataset_name}.json')
 
-            if reference_path is not None:
-                # All datasets align to the reference, there is no external first slice
-                first_slice = None
-
-                # The xy_offset is relative to the global offset to a reference
-                bbox_ref = ref_bboxes[idx]
-                bbox_ref_start = np.array([bbox_ref[2], bbox_ref[0]]) # xy
-                xy_offset = np.abs(ref_global_bbox_start - bbox_ref_start).astype(int).tolist()
-            elif dataset_name == path[0] and i == 0:
-                # Very first dataset to align without reference should be root
-                assert dataset_name == root_stack, f'First dataset ({dataset_name}) of the path is not the root stack ({root_stack})'
-                first_slice = None
-                xy_offset = list(map(int, root_offset))
-                bbox_ref = None
-            else:
-                # The reference is the last slice actually written by the predecessor
-                # in this alignment path. Determined from the predecessor's stored
-                # z_offset and shape 
-                predecessor = path[path.index(dataset_name) - 1]
-                pred_idx = [os.path.basename(os.path.abspath(d.kvstore.path)) == predecessor for d in datasets].index(True)
-                first_slice = int(z_offsets[pred_idx, 0]) + ds_bounds[predecessor][1] - 1
-                xy_offset = [0, 0]
-                bbox_ref = None
-
             config = {
                 'destination_path': destination_path,
                 'dataset_path': os.path.abspath(dataset.kvstore.path),
                 'dataset_name': dataset_name,
                 'reference_path': reference_path,
-                'reference_offset': reference_offset,
+                'align_to_reference': reference_path is not None,  # Every slice aligns to its match in the reference
+                'reference_offset': reference_offset + z_offset - ds_bounds[dataset_name][0],
+                'max_gap': config_z.get('max_gap', 2),  # Slices chained to a neighbour when the reference is missing
                 'alignment_path': path,
                 'reverse_order': order,
                 'project_name': project_name,
                 'mongodb_config_filepath': mongodb_config_filepath,
-                'bbox_ref': bbox_ref,
                 'z_offset': z_offset,
-                'xy_offset': xy_offset,
                 'local_z_min': ds_bounds[dataset_name][0],
                 'local_z_max': ds_bounds[dataset_name][1],
                 'scale': config_z['scale_flow'],
-                'flow_config': config_z['flow'],
-                'mesh_config': config_z['mesh'],
+                'flow_config': flow_config,
+                'clean_config': clean_config,
+                'mesh_config': mesh_config,
                 'warp_config': config_z['warp'],
-                'first_slice': first_slice,
                 'yx_target_resolution': yx_target_resolution,
-                'save_downsampled': save_downsampled,
-                'overwrite': False
+                'save_downsampled': save_downsampled
             }
             config = add_config_metadata(config)
 
@@ -306,9 +239,9 @@ def create_alignment_configs(datasets, z_offsets, output_configs_dir, config_z, 
                 json.dump(config, f, indent=2)
             done.append(dataset_name)
 
-    logging.info(f'Configuration files were created at {output_configs_dir}')
+    logger.info(f'Configuration files were created at {output_configs_dir}')
 
-    return root_stack, paths, reverse_order, root_offset
+    return root_stack, paths, reverse_order
 
 
 def prep_config_z(project_dir: str,
@@ -342,7 +275,7 @@ def prep_config_z(project_dir: str,
         config_paths = [os.path.join(project_dir, 'config/xy_config/main_config.json')]
         if not os.path.exists(config_paths[0]):
             raise FileNotFoundError(f'Main config file not found in the project directory: {config_paths[0]}')
-        logging.info(f'Config file location was determined from project directory:\n{config_paths[0]}\n')
+        logger.info(f'Config file location was determined from project directory:\n{config_paths[0]}\n')
 
     # Check if output directory already has configs
     output_configs_dir = os.path.join(project_dir, 'config', 'z_config')
@@ -351,9 +284,9 @@ def prep_config_z(project_dir: str,
     if existing_configs and not force_overwrite:
         response = input(f'Config files already exist at {output_configs_dir}.\nOverwrite? [y/N] ')
         if response.lower() != 'y':
-            logging.info('Exiting without overwriting existing config')
+            logger.info('Exiting without overwriting existing config')
             sys.exit(0)
-        logging.info('Overwriting existing config files')
+        logger.info('Overwriting existing config files')
 
     # Load Z alignment parameters
     try:
@@ -365,7 +298,7 @@ def prep_config_z(project_dir: str,
         raise ValueError(f'Invalid JSON in Z alignment config file {config_z_path}: {e}')
 
     # Load datasets from XY configs
-    logging.info('Loading datasets from XY configuration files...')
+    logger.info('Loading datasets from XY configuration files...')
     (datasets, z_offsets, yx_target_resolution,
      project_name, mongodb_config_filepath, xy_output_path) = load_configs_from_files(
         config_paths, exclude)
@@ -379,30 +312,27 @@ def prep_config_z(project_dir: str,
     if reference_path is not None:
         if os.path.exists(reference_path):
             res_ref = get_store_attributes(reference_path)['resolution']
-            logging.info(f'Reference for alignment: {reference_path}')
-            logging.info(f'Reference resolution: {res_ref}\n')
-            logging.info(f'Reference XY resolution scaling: {res_ref[-1]/yx_target_resolution}')
+            logger.info(f'Reference for alignment: {reference_path}')
+            logger.info(f'Reference resolution: {res_ref}\n')
+            logger.info(f'Reference XY resolution scaling: {res_ref[-1]/yx_target_resolution}')
         else:
             raise FileNotFoundError(f'Provided reference path does not exist: {reference_path}')
     
     # Print dataset info
-    logging.info('Datasets Z offsets:')
+    logger.info('Datasets Z offsets:')
     for dataset, z in zip(datasets, z_offsets):
         yx_res = get_store_attributes(dataset)['resolution'][1:]
-        logging.info(f'    {z[0]} (res: {yx_res}): {os.path.basename(os.path.abspath(dataset.kvstore.path))}')
-    logging.info('')
+        logger.info(f'    {z[0]} (res: {yx_res}): {os.path.basename(os.path.abspath(dataset.kvstore.path))}')
+    logger.info('')
 
     # Stacks overlapping on the same Z slices must have been fused beforehand
     check_fuse_step(config_paths, datasets)
 
-    if isinstance(yx_target_resolution, list):
-        yx_target_resolution = np.min(yx_target_resolution, axis=0).tolist()
-
-    logging.info(f'Target resolution (yx): {yx_target_resolution}\n')
-    logging.info(f'Destination path: {destination_path}\n')
+    logger.info(f'Target resolution (yx): {yx_target_resolution}\n')
+    logger.info(f'Destination path: {destination_path}\n')
 
     # Create configuration files
-    root_stack, paths, reverse_order, root_offset = create_alignment_configs(
+    root_stack, paths, reverse_order = create_alignment_configs(
         datasets, z_offsets, output_configs_dir, config_z, reference_path, reference_offset,
         destination_path, project_name, mongodb_config_filepath,
         yx_target_resolution, save_downsampled
@@ -413,27 +343,24 @@ def prep_config_z(project_dir: str,
 
     if warnings:
         for warning in warnings:
-            logging.warning(warning)
+            logger.warning(warning)
 
     if not is_valid:
         for error in errors:
-            logging.error(error)
+            logger.error(error)
         raise RuntimeError('Created configuration files are invalid')
 
-    logging.info(f'Config version: {CONFIG_VERSION}')
-    logging.info(f'Root stack: {root_stack}')
-    logging.info(f'Number of alignment paths: {len(paths)}')
-    logging.info(f'\nConfiguration complete!')
-    logging.info(f'Config directory: {output_configs_dir}')
-    logging.info(f'\n\nTo run alignment:\nCUDA_VISIBLE_DEVICES=0,1 python align_dataset_z.py -p {project_dir} -c 1')
+    logger.info(f'Config version: {CONFIG_VERSION}')
+    logger.info(f'Root stack: {root_stack}')
+    logger.info(f'Number of alignment paths: {len(paths)}')
+    logger.info(f'\nConfiguration complete!')
+    logger.info(f'Config directory: {output_configs_dir}')
+    logger.info(f'\n\nTo compute transforms:\npython -m emalign.run_alignment z transform -p {project_dir}')
 
     return output_configs_dir
 
 
-if __name__ == '__main__':
-
-    parser = argparse.ArgumentParser(description='Prepare configuration files for Z alignment.')
-
+def add_parser_arguments(parser):
     # Required arguments
     parser.add_argument('-p', '--project-dir',
                         metavar='PROJECT_DIR',
@@ -493,7 +420,16 @@ if __name__ == '__main__':
                         action='store_true',
                         default=False,
                         help='Force overwrite of existing config files. Default: user is prompted if configs exist')
+    return parser
 
-    args = parser.parse_args()
+if __name__ == '__main__':
+    
+    from emalign.utils.logging_utils import setup_logging
+    setup_logging(logging.INFO)
 
+    parser = argparse.ArgumentParser(
+        description='Prepare configuration files for Z alignment.',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+        )
+    args = add_parser_arguments(parser).parse_args()
     prep_config_z(**vars(args))

@@ -178,7 +178,7 @@ def set_store_attributes(store: ts.TensorStore | str, attrs: dict) -> bool:
         IOError: If the .zattrs file cannot be written.
     '''
     path = store if isinstance(store, str) else store.kvstore.path
-    attrs_path = os.path.join(path, '.zattrs')
+    attrs_path = os.path.join(os.path.abspath(path), '.zattrs')
     with open(attrs_path, 'w') as f:
         json.dump(attrs, f, indent=2)
     return True
@@ -198,10 +198,13 @@ def get_store_attributes(store: ts.TensorStore | str) -> dict:
         json.JSONDecodeError: If the .zattrs file contains invalid JSON.
     '''
     path = store if isinstance(store, str) else store.kvstore.path
-    attrs_path = os.path.join(path, '.zattrs')
-    with open(attrs_path, 'r') as f:
-        attrs = json.load(f)
-    return attrs
+    attrs_path = os.path.join(os.path.abspath(path), '.zattrs')
+
+    if os.path.exists(attrs_path):
+        with open(attrs_path, 'r') as f:
+            attrs = json.load(f)
+        return attrs
+    return None
 
 
 def write_ndarray(
