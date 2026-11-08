@@ -393,15 +393,32 @@ def inspect_dataset(
         datasets, bbox = get_transformed_datasets(dataset_path, z_slices, yx_bbox=yx_bbox, raw_trsf=raw_trsf)
         if not datasets:
             raise RuntimeError(f'No dataset found with valid transforms for slices: {z_slices}')
+        if len(datasets) > 1:
+            print(f'{len(datasets)} datasets were found within this range:')
+            for i, dataset_info in enumerate(datasets):
+                print(f'    {i}: {dataset_info['name']}')
+            ds_idx = input(f'Please choose one (0-{i}): ')
+            try:
+                ds_idx = int(ds_idx)
+                assert ds_idx > 0 and ds_idx <= i
+            except:
+                ds_idx = input(f'Please choose a valid index (number between 0 and {i}): ')
+                try:
+                    ds_idx = int(ds_idx)
+                    assert ds_idx > 0 and ds_idx <= i
+                except:
+                    raise ValueError('Invalid dataset index.')
+        else:
+            ds_idx = 0
 
-        for dataset_info in datasets:
-            d = read_transformed_data(dataset_info, len(z_slices), bbox)
-            add_layers([d],
-                       viewer,
-                       names=[dataset_info['name']],
-                       voxel_offsets=[[bbox[2], bbox[0], z_slices[0]]],
-                       visible=dataset_info == datasets[0],
-                       clear_viewer=False)
+        dataset_info = datasets[ds_idx]
+        d = read_transformed_data(dataset_info, len(z_slices), bbox)
+        add_layers([d],
+                    viewer,
+                    names=[dataset_info['name']],
+                    voxel_offsets=[[bbox[2], bbox[0], z_slices[0]]],
+                    visible=dataset_info == datasets[0],
+                    clear_viewer=False)
 
     input('All data loaded. Press ENTER to exit.')
 
