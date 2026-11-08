@@ -6,7 +6,7 @@
   },
   "clean": {
     "min_peak_ratio": 1.6,
-    "min_peak_sharpness": 1.6,
+    "min_peak_sharpness": 1.0,
     "max_magnitude": 80,
     "max_deviation": 350,
     "max_gradient": 0,
@@ -27,7 +27,7 @@
     "remove_drift": false
   },
   "warp": {
-    "work_size": 512,
+    "work_size": 1024,
     "overlap": 1
   }
 }
