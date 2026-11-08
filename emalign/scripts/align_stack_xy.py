@@ -13,6 +13,7 @@ import argparse
 
 from tqdm import tqdm
 
+from ..align_xy.params import SMALL_OVERLAP_THRESHOLD, default_mesh_parameters, parse_mesh_parameters
 from ..align_xy.render import render_slice_xy, get_render_order, resolve_img_q_fun
 from ..align_xy.stitch_ongrid import get_coarse_offset, get_elastic_mesh
 from ..arrays.stacks import Stack, parse_stack_info
@@ -44,7 +45,8 @@ def align_stack_xy(output_path,
                    overwrite=False,
                    wipe_progress_flag=False,
                    img_q_fun=None,
-                   min_stitch_score=0.8):
+                   min_stitch_score=0.8,
+                   mesh_parameters=None):
     
     '''Align and stitch image stack in XY. 
 
@@ -70,7 +72,15 @@ def align_stack_xy(output_path,
             e.g.: img_q_fun = lambda img, m: compute_laplacian_var(img, m)
         min_stitch_score (float): Minimum acceptable stitch score (0 to 1) for a slice to be written. Slices below this
             are retried once from scratch and raise an error if they still fail. Lower values are more permissive. Defaults to 0.8.
+        mesh_parameters (dict, optional): Elastic mesh parameters, as returned by align_xy.params.parse_mesh_parameters:
+            {'default': {stride, patch_size, k0, k, gamma}, 'small_overlap': {stride, patch_size, k0, k, gamma, margin}}.
+            'small_overlap' is used when tiles overlap by less than SMALL_OVERLAP_THRESHOLD pixels. Defaults to None (built-in defaults).
     '''
+
+    if mesh_parameters is None:
+        mesh_parameters = default_mesh_parameters(stride)
+    mesh_param_default = mesh_parameters['default']
+    mesh_param_smalloverlap = mesh_parameters['small_overlap']
 
     client = get_mongo_client(mongodb_config_filepath)
     db = get_mongo_db(client, project_name)
@@ -185,13 +195,13 @@ def align_stack_xy(output_path,
                                                         overlap_cap=1000
                                                     )
 
-                if overlap > 160:
+                if overlap > SMALL_OVERLAP_THRESHOLD:
                     # Generally good parameters
-                    render_stride=stride
-                    patch_size = 160
-                    k0 = 0.01
-                    k = 0.1
-                    gamma = 0.5
+                    render_stride = mesh_param_default['stride']
+                    patch_size = mesh_param_default['patch_size']
+                    k0 = mesh_param_default['k0']
+                    k = mesh_param_default['k']
+                    gamma = mesh_param_default['gamma']
 
                     # Determine margin by finding the minimum displacement in X or Y between adjacent tiles
                     # Margin is how many pixels to ignore from the tiles when rendering. Too high leaves a delimitation, too low leaves a gap
@@ -200,12 +210,12 @@ def align_stack_xy(output_path,
                     margin = min(200, int(min_displacement // 2 * 0.9))
                 else:
                     # Parameters tested for very small overlap
-                    render_stride=10
-                    patch_size=30
-                    k0=0.07
-                    k=0.2
-                    gamma=0.5
-                    margin=10
+                    render_stride = mesh_param_smalloverlap['stride']
+                    patch_size = mesh_param_smalloverlap['patch_size']
+                    k0 = mesh_param_smalloverlap['k0']
+                    k = mesh_param_smalloverlap['k']
+                    gamma = mesh_param_smalloverlap['gamma']
+                    margin = mesh_param_smalloverlap['margin']
 
                 pbar.set_description(f'{stack.stack_name}: Computing elastic mesh...')
                 meshes, _ = get_elastic_mesh(tile_map, 
@@ -324,7 +334,8 @@ if __name__ == '__main__':
     img_q_fun       = resolve_img_q_fun(main_config.get('img_on_top'))
     min_stitch_score = main_config.get('min_stitch_score', 0.8)
 
-    tile_maps_paths, tile_maps_invert = parse_stack_info(stack_configs[args.stack_name])
+    tile_maps_paths, tile_maps_invert, ignore_slices = parse_stack_info(stack_configs[args.stack_name])
+    mesh_parameters = parse_mesh_parameters(stack_configs[args.stack_name], stride)
 
     align_stack_xy(output_path=output_path,
                    stack_name=args.stack_name,
@@ -338,7 +349,10 @@ if __name__ == '__main__':
                    num_cores=args.num_cores,
                    overwrite=args.overwrite,
                    project_name=project_name,
+                   io_mode=main_config['io_mode'],
+                   ignore_slices=ignore_slices,
                    mongodb_config_filepath=mongodb_config_filepath,
                    wipe_progress_flag=args.wipe_progress,
                    img_q_fun=img_q_fun,
-                   min_stitch_score=min_stitch_score)
+                   min_stitch_score=min_stitch_score,
+                   mesh_parameters=mesh_parameters)
